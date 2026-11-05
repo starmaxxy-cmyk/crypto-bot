@@ -1,5 +1,5 @@
 import asyncio
-import datetime
+from datetime import datetime
 import json
 import os
 import re
@@ -23,161 +23,165 @@ dp = Dispatcher(storage=MemoryStorage())
 
 DB_FILE = "deals.json"
 
-CLIENTS_LIST = ["SwapLine", "LarMaks", "Коваленко", "Yrii", "Саша Фоп"]
+# Оновлений список клієнтів
+CLIENTS_LIST = [
+    "Карта Лічка",
+    "LarMaks",
+    "Коваленко",
+    "Саша Фоп",
+    "Yrii",
+    "SwapLine",
+    "Crypcie",
+    "Финики",
+    "TradX",
+    "Посилання",
+    "Михайло",
+]
+
 
 def load_data():
-    if not os.path.exists(DB_FILE):
-        return {}
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+  if not os.path.exists(DB_FILE):
+    return {}
+  with open(DB_FILE, "r", encoding="utf-8") as f:
+    return json.load(f)
+
 
 def save_data(data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+  with open(DB_FILE, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=4)
 
-class DealForm(StatesGroup):
-    waiting_for_client = State()
-    waiting_for_in = State()
-    waiting_for_out = State()
 
-main_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="➕ Додати угоду")],
-        [KeyboardButton(text="📊 Звіт за сьогодні")],
-    ],
-    resize_keyboard=True,
-)
+# Стани для створення заявки
+class DealState(StatesGroup):
+  waiting_for_client = State()
+  waiting_for_amount_received = State()
+  waiting_for_amount_spent = State()
 
-def get_clients_inline_kb():
-    buttons = [
-        [InlineKeyboardButton(text=client, callback_data=f"client_{client}")]
-        for client in CLIENTS_LIST
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer("Вітаю! Оберіть дію в меню нижче:", reply_markup=main_kb)
+  keyboard = ReplyKeyboardMarkup(
+      keyboard=[
+          [KeyboardButton(text="➕ Додати заявку"), KeyboardButton(text="📊 Звіт за день")]
+      ],
+      resize_keyboard=True,
+  )
+  await message.answer(
+      "Вітаю! Це бот для обчислення та обліку заявок.\nВиберіть потрібну дію на"
+      " клавіатурі нижче:",
+      reply_markup=keyboard,
+  )
 
-@dp.message(F.text == "➕ Додати угоду")
-async def start_deal(message: Message, state: FSMContext):
-    await state.set_state(DealForm.waiting_for_client)
-    await message.answer(
-        "Оберіть клієнта зі списку або напишіть ім'я вручну:",
-        reply_markup=get_clients_inline_kb(),
-    )
 
-@dp.callback_query(DealForm.waiting_for_client, F.data.startswith("client_"))
-async def process_client_callback(callback_query, state: FSMContext):
-    client_name = callback_query.data.replace("client_", "")
-    await state.update_data(client=client_name)
-    await state.set_state(DealForm.waiting_for_in)
-    await callback_query.message.answer(
-        f"Клієнт: **{client_name}**\nВведіть або перешліть суму ОТРИМАНО (USDT):",
-        parse_mode="Markdown",
-    )
-    await callback_query.answer()
+@dp.message(F.text == "➕ Додати заявку")
+async def add_deal_start(message: Message, state: FSMContext):
+  # Створюємо інлайн-клавіатуру зі списком клієнтів
+  keyboard_buttons = [
+      [InlineKeyboardButton(text=client, callback_data=f"client_{client}")]
+      for client in CLIENTS_LIST
+  ]
+  keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
-@dp.message(DealForm.waiting_for_client)
-async def process_client_text(message: Message, state: FSMContext):
-    await state.update_data(client=message.text)
-    await state.set_state(DealForm.waiting_for_in)
-    await message.answer(
-        f"Клієнт: **{message.text}**\nВведіть або перешліть суму ОТРИМАНО (USDT):",
-        parse_mode="Markdown",
-    )
+  await message.answer("Виберіть клієнта для нової заявки:", reply_markup=keyboard)
+  await state.set_state(DealState.waiting_for_client)
 
-@dp.message(DealForm.waiting_for_in)
-async def process_in(message: Message, state: FSMContext):
-    match = re.search(r"(\d+[\.,]?\d*)", message.text)
-    if match:
-        amount_in = float(match.group(1).replace(",", "."))
-        await state.update_data(amount_in=amount_in)
-        await state.set_state(DealForm.waiting_for_out)
-        await message.answer("Скільки ВИ ТРАЧЕНО (USDT)? (Якщо 0 — введіть 0)")
-    else:
-        await message.answer("Не вдалося знайти число. Введіть суму цифрами:")
 
-@dp.message(DealForm.waiting_for_out)
-async def process_out(message: Message, state: FSMContext):
-    match = re.search(r"(\d+[\.,]?\d*)", message.text)
-    if match:
-        amount_out = float(match.group(1).replace(",", "."))
-        data = await state.get_data()
+@dp.callback_query(F.data.startswith("client_"))
+async def process_client(callback: types.CallbackQuery, state: FSMContext):
+  client_name = callback.data.replace("client_", "")
+  await state.update_data(client=client_name)
 
-        client = data["client"]
-        amount_in = data["amount_in"]
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
+  await callback.message.answer(
+      f"Вибрано клієнта: <b>{client_name}</b>.\nВведіть суму, яку <b>отримано</b>"
+      " (тільки число):",
+      parse_mode="HTML",
+  )
+  await callback.answer()
+  await state.set_state(DealState.waiting_for_amount_received)
 
-        db = load_data()
-        if today not in db:
-            db[today] = []
 
-        db[today].append({
-            "time": datetime.datetime.now().strftime("%H:%M"),
-            "client": client,
-            "in": amount_in,
-            "out": amount_out,
-        })
-        save_data(db)
+@dp.message(DealState.waiting_for_amount_received)
+async def process_amount_received(message: Message, state: FSMContext):
+  try:
+    amount = float(message.text.replace(",", "."))
+    await state.update_data(received=amount)
+    await message.answer("Тепер введіть суму, яку <b>витрачено</b> (тільки число):", parse_mode="HTML")
+    await state.set_state(DealState.waiting_for_amount_spent)
+  except ValueError:
+    await message.answer("Будь ласка, введіть коректне число для отриманої суми.")
 
-        await message.answer(
-            f"✅ **Угоду успішно записано!**\n\n"
-            f"• Клієнт: `{client}`\n"
-            f"• Отримано: `{amount_in} USDT`\n"
-            f"• Витрачено: `{amount_out} USDT`",
-            reply_markup=main_kb,
-            parse_mode="Markdown",
-        )
-        await state.clear()
-    else:
-        await message.answer("Будь ласка, введіть суму витрат цифрами:")
 
-@dp.message(F.text == "📊 Звіт за сьогодні")
-async def show_report(message: Message):
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    date_str = datetime.datetime.now().strftime("%d.%m.%Y")
+@dp.message(DealState.waiting_for_amount_spent)
+async def process_amount_spent(message: Message, state: FSMContext):
+  try:
+    spent = float(message.text.replace(",", "."))
+    data = await state.get_data()
+    client = data["client"]
+    received = data["received"]
+
+    # Зберігаємо дані в JSON з урахуванням накопичення за сьогодні
     db = load_data()
+    today = datetime.now().strftime("%Y-%m-%d")
 
-    if today not in db or not db[today]:
-        await message.answer(f"За сьогодні ({date_str}) угод ще немає.")
-        return
+    if today not in db:
+      db[today] = {}
 
-    deals = db[today]
-    summary = {}
-    total_in = 0.0
-    total_out = 0.0
+    if client not in db[today]:
+      db[today][client] = {"received": 0.0, "spent": 0.0, "count": 0}
 
-    for deal in deals:
-        c = deal["client"]
-        if c not in summary:
-            summary[c] = {"in": 0.0, "out": 0.0, "count": 0}
-        summary[c]["in"] += deal["in"]
-        summary[c]["out"] += deal["out"]
-        summary[c]["count"] += 1
+    # Додаємо нові суми до вже існуючих за день
+    db[today][client]["received"] += received
+    db[today][client]["spent"] += spent
+    db[today][client]["count"] += 1
 
-        total_in += deal["in"]
-        total_out += deal["out"]
+    save_data(db)
 
-    report_text = f"📅 **Звіт за {date_str}:**\n\n"
-    for c, val in summary.items():
-        report_text += (
-            f"👤 **{c}** ({val['count']} замовл.)\n"
-            f"  • Отримано: `{val['in']:.2f} USDT`\n"
-            f"  • Витрачено: `{val['out']:.2f} USDT`\n\n"
-        )
+    await state.clear()
+    await message.answer(
+        f"✅ <b>Заявку успішно збережено!</b>\n\nКлієнт: {client}\nДодано отримано:"
+        f" {received}\nДодано витрачено: {spent}",
+        parse_mode="HTML",
+    )
+  except ValueError:
+    await message.answer("Будь ласка, введіть коректне число для витраченої суми.")
 
-    report_text += (
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 **ВСЬОГО ЗА ДЕНЬ:**\n"
-        f"• Отримано: `{total_in:.2f} USDT`\n"
-        f"• Витрачено: `{total_out:.2f} USDT`"
+
+@dp.message(F.text == "📊 Звіт за день")
+async def daily_report(message: Message):
+  db = load_data()
+  today = datetime.now().strftime("%Y-%m-%d")
+
+  if today not in db or not db[today]:
+    await message.answer("📅 За сьогодні ще немає записаних заявок.")
+    return
+
+  report_text = f"📊 <b>Звіт за сьогодні ({today}):</b>\n\n"
+  total_received_day = 0
+  total_spent_day = 0
+
+  for client, values in db[today].items():
+    rec = values["received"]
+    spt = values["spent"]
+    cnt = values["count"]
+    total_received_day += rec
+    total_spent_day += spt
+
+    report_text.__(
+        f"• <b>{client}</b> (заявок: {cnt}):\n"
+        f"   — Отримано: <code>{rec}</code>\n"
+        f"   — Витрачено: <code>{spt}</code>\n\n"
     )
 
-    await message.answer(report_text, parse_mode="Markdown")
+  report_text += "━━━━━━━━━━━━━━━━━━━\n"
+  report_text += f"💰 <b>Загалом отримано:</b> <code>{total_received_day}</code>\n"
+  report_text += f"💸 <b>Загалом витрачено:</b> <code>{total_spent_day}</code>"
+
+  await message.answer(report_text, parse_mode="HTML")
+
 
 async def main():
-    await dp.start_polling(bot)
+  await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+  asyncio.run(main())
