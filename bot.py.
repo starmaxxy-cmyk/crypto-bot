@@ -16,7 +16,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-BOT_TOKEN = "9109641585:AAEmCJ0KoJbqz-9w12q0uydJRKH078pxILM"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
