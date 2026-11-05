@@ -3,7 +3,7 @@ from datetime import datetime
 import json
 import os
 import re
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -75,7 +75,6 @@ async def cmd_start(message: Message):
 
 @dp.message(F.text == "➕ Додати заявку")
 async def add_deal_start(message: Message, state: FSMContext):
-  # Створюємо інлайн-клавіатуру зі списком клієнтів
   keyboard_buttons = [
       [InlineKeyboardButton(text=client, callback_data=f"client_{client}")]
       for client in CLIENTS_LIST
@@ -119,7 +118,6 @@ async def process_amount_spent(message: Message, state: FSMContext):
     client = data["client"]
     received = data["received"]
 
-    # Зберігаємо дані в JSON з урахуванням накопичення за сьогодні
     db = load_data()
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -129,7 +127,6 @@ async def process_amount_spent(message: Message, state: FSMContext):
     if client not in db[today]:
       db[today][client] = {"received": 0.0, "spent": 0.0, "count": 0}
 
-    # Додаємо нові суми до вже існуючих за день
     db[today][client]["received"] += received
     db[today][client]["spent"] += spent
     db[today][client]["count"] += 1
@@ -166,7 +163,7 @@ async def daily_report(message: Message):
     total_received_day += rec
     total_spent_day += spt
 
-    report_text.__(
+    report_text += (
         f"• <b>{client}</b> (заявок: {cnt}):\n"
         f"   — Отримано: <code>{rec}</code>\n"
         f"   — Витрачено: <code>{spt}</code>\n\n"
