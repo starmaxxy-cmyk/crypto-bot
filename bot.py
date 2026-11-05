@@ -23,7 +23,6 @@ dp = Dispatcher(storage=MemoryStorage())
 
 DB_FILE = "deals.json"
 
-# Оновлений список клієнтів
 CLIENTS_LIST = [
     "Карта Лічка",
     "LarMaks",
@@ -51,24 +50,33 @@ def save_data(data):
     json.dump(data, f, ensure_ascii=False, indent=4)
 
 
-# Стани для створення заявки
+# Стани
 class DealState(StatesGroup):
   waiting_for_client = State()
   waiting_for_amount_received = State()
   waiting_for_amount_spent = State()
 
 
+class EditState(StatesGroup):
+  waiting_for_received = State()
+  waiting_for_spent = State()
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
   keyboard = ReplyKeyboardMarkup(
       keyboard=[
-          [KeyboardButton(text="➕ Додати заявку"), KeyboardButton(text="📊 Звіт за день")]
+          [KeyboardButton(text="➕ Додати заявку"), KeyboardButton(text="📊 Звіт за день")],
+          [
+              KeyboardButton(text="🗑 Видалити останню заявку"),
+              KeyboardButton(text="✏️ Редагувати останню заявку"),
+          ],
+          [KeyboardButton(text="🗑 Скинути день")],
       ],
       resize_keyboard=True,
   )
   await message.answer(
-      "Вітаю! Це бот для обчислення та обліку заявок.\nВиберіть потрібну дію на"
-      " клавіатурі нижче:",
+      "Вітаю! Це бот для обліку заявок.\nВиберіть потрібну дію на клавіатурі нижче:",
       reply_markup=keyboard,
   )
 
@@ -122,21 +130,17 @@ async def process_amount_spent(message: Message, state: FSMContext):
     today = datetime.now().strftime("%Y-%m-%d")
 
     if today not in db:
-      db[today] = {}
+      db[today] = []
 
-    if client not in db[today]:
-      db[today][client] = {"received": 0.0, "spent": 0.0, "count": 0}
-
-    db[today][client]["received"] += received
-    db[today][client]["spent"] += spent
-    db[today][client]["count"] += 1
+    # Додаємо новий запис у список за сьогодні
+    db[today].append({"client": client, "received": received, "spent": spent})
 
     save_data(db)
 
     await state.clear()
     await message.answer(
-        f"✅ <b>Заявку успішно збережено!</b>\n\nКлієнт: {client}\nДодано отримано:"
-        f" {received}\nДодано витрачено: {spent}",
+        f"✅ <b>Заявку успішно збережено!</b>\n\nКлієнт: {client}\nОтримано:"
+        f" {received}\nВитрачено: {spent}",
         parse_mode="HTML",
     )
   except ValueError:
@@ -152,16 +156,32 @@ async def daily_report(message: Message):
     await message.answer("📅 За сьогодні ще немає записаних заявок.")
     return
 
-  report_text = f"📊 <b>Звіт за сьогодні ({today}):</b>\n\n"
+  # Групуємо та підсумовуємо дані по клієнтах для звіту
+  summary = {}
   total_received_day = 0
   total_spent_day = 0
 
-  for client, values in db[today].items():
+  for entry in db[today]:
+    c = entry["client"]
+    rec = entry["received"]
+    spt = entry["spent"]
+
+    if c not in summary:
+      summary[c] = {"received": 0.0, "spent": 0.0, "count": 0}
+
+    summary[c]["received"] += rec
+    summary[c]["spent"] += spt
+    summary[c]["count"] += 1
+
+    total_received_day += rec
+    total_spent_day += spt
+
+  report_text = f"📊 <b>Звіт за сьогодні ({today}):</b>\n\n"
+
+  for client, values in summary.items():
     rec = values["received"]
     spt = values["spent"]
     cnt = values["count"]
-    total_received_day += rec
-    total_spent_day += spt
 
     report_text += (
         f"• <b>{client}</b> (заявок: {cnt}):\n"
@@ -174,6 +194,109 @@ async def daily_report(message: Message):
   report_text += f"💸 <b>Загалом витрачено:</b> <code>{total_spent_day}</code>"
 
   await message.answer(report_text, parse_mode="HTML")
+
+
+@dp.message(F.text == "🗑 Видалити останню заявку")
+async def delete_last_deal(message: Message):
+  db = load_data()
+  today = datetime.now().strftime("%Y-%m-%d")
+
+  if today in db and db[today]:
+    removed = db[today].pop()
+    if not db[today]:
+      del db[today]
+    save_data(db)
+    await message.answer(
+        f"✅ <b>Останню заявку успішно видалено!</b>\n\nКлієнт:"
+        f" {removed['client']}\nОтримано: {removed['received']}\nВитрачено:"
+        f" {removed['spent']}",
+        parse_mode="HTML",
+    )
+  else:
+    await message.answer("📅 За сьогодні немає записів для видалення.")
+
+
+@dp.message(F.text == "✏️ Редагувати останню заявку")
+async def edit_last_start(message: Message, state: FSMContext):
+  db = load_data()
+  today = datetime.now().strftime("%Y-%m-%d")
+
+  if today not in db or not db[today]:
+    await message.answer("📅 За сьогодні ще немає заявок для редагування.")
+    return
+
+  last_deal = db[today][-1]
+  await message.answer(
+      f"Редагуємо останню заявку:\nКлієнт: <b>{last_deal['client']}</b>\nПопередня"
+      f" сума отримано: {last_deal['received']}, витрачено:"
+      f" {last_deal['spent']}\n\nВведіть нову суму, яку <b>отримано</b> (або"
+      " надішліть крапку <code>.</code>, щоб залишити без змін):",
+      parse_mode="HTML",
+  )
+  await state.set_state(EditState.waiting_for_received)
+
+
+@dp.message(EditState.waiting_for_received)
+async def edit_received(message: Message, state: FSMContext):
+  text = message.text.strip()
+  db = load_data()
+  today = datetime.now().strftime("%Y-%m-%d")
+  last_deal = db[today][-1]
+
+  if text != ".":
+    try:
+      amount = float(text.replace(",", "."))
+      last_deal["received"] = amount
+    except ValueError:
+      await message.answer("Будь ласка, введіть коректне число або '.' щоб залишити поточне.")
+      return
+
+  save_data(db)
+  await message.answer(
+      f"Поточна витрачена сума: {last_deal['spent']}\nВведіть нову суму, яку"
+      " <b>витрачено</b> (або надішліть крапку <code>.</code>, щоб залишити без"
+      " змін):",
+      parse_mode="HTML",
+  )
+  await state.set_state(EditState.waiting_for_spent)
+
+
+@dp.message(EditState.waiting_for_spent)
+async def edit_spent(message: Message, state: FSMContext):
+  text = message.text.strip()
+  db = load_data()
+  today = datetime.now().strftime("%Y-%m-%d")
+  last_deal = db[today][-1]
+
+  if text != ".":
+    try:
+      amount = float(text.replace(",", "."))
+      last_deal["spent"] = amount
+    except ValueError:
+      await message.answer("Будь ласка, введіть коректне число або '.' щоб залишити поточне.")
+      return
+
+  save_data(db)
+  await state.clear()
+  await message.answer(
+      f"✅ <b>Останню заявку успішно оновлено!</b>\n\nКлієнт:"
+      f" {last_deal['client']}\nОтримано: {last_deal['received']}\nВитрачено:"
+      f" {last_deal['spent']}",
+      parse_mode="HTML",
+  )
+
+
+@dp.message(F.text == "🗑 Скинути день")
+async def reset_today(message: Message):
+  db = load_data()
+  today = datetime.now().strftime("%Y-%m-%d")
+
+  if today in db:
+    del db[today]
+    save_data(db)
+    await message.answer("🗑 Усі сьогоднішні дані очищено. Можете вносити заявки наново!")
+  else:
+    await message.answer("📅 За сьогодні ще немає записів для очищення.")
 
 
 async def main():
