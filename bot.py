@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-TOKEN = "9198206541:AAFFn3yUbAkKE6J311_8Iw1sI-4FbuSFN0g"
+TOKEN = "9100600793:AAEIyt2CLU7KBEQap0nhfBWvtVKK7tv2Dms"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
