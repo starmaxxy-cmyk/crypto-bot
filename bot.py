@@ -10,7 +10,8 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-TOKEN = "9015943013:AAFOf-TUX4AeklQ_JWqsCs34Wju_cEHrRbE"
+# ЗАМІНІТЬ ЦЕЙ РЯДОК НА НОВИЙ ТОКЕН ВІД BOTFATHER
+TOKEN = "9198206541:AAFFn3yUbAKkE6J311_8Iw1sI-4FbuSFN0g"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -22,8 +23,8 @@ async def cmd_start(message: types.Message):
   await message.answer("Надішли мені квитанцію Мій Господин")
 
 
-# Універсальна перевірка та надсилання посилання на файл квитанції
-async def process_text_and_reply(message: types.Message, extracted_text: str):
+# Головна функція перевірки та надсилання результату з кнопкою на файл
+async def process_and_reply(message: types.Message, extracted_text: str):
   # Шукаємо 16-значний код квитанції (наприклад, T20K-357H-T17C-H7PH)
   code_match = re.search(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}", extracted_text)
 
@@ -47,7 +48,7 @@ async def process_text_and_reply(message: types.Message, extracted_text: str):
           payee = data.get("payeeName", "Не вказано")
           payment_date = data.get("paymentDate", "Не вказано")
           
-          # Офіційне посилання на скачування самого PDF-файлу квитанції
+          # Пряме посилання на завантаження офіційного файлу квитанції з держсервісу
           pdf_download_url = f"https://check.gov.ua/receipts/{receipt_code}"
           
           keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -107,7 +108,7 @@ async def handle_document(message: types.Message):
   if os.path.exists(temp_filename):
     os.remove(temp_filename)
 
-  await process_text_and_reply(message, extracted_text)
+  await process_and_reply(message, extracted_text)
 
 
 # Обробка скріншотів та фото з галереї
@@ -125,7 +126,6 @@ async def handle_photo(message: types.Message):
 
   extracted_text = ""
   try:
-    # Пробуємо зчитати текст з картинки
     extracted_text = pytesseract.image_to_string(Image.open(temp_filename), lang='ukr+eng')
   except Exception as e:
     logging.error(f"Помилка OCR з фото: {e}")
@@ -133,7 +133,7 @@ async def handle_photo(message: types.Message):
   if os.path.exists(temp_filename):
     os.remove(temp_filename)
 
-  await process_text_and_reply(message, extracted_text)
+  await process_and_reply(message, extracted_text)
 
 
 async def main():
