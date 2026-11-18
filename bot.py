@@ -4,7 +4,7 @@ import os
 import re
 import pdfplumber
 import requests
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageOps
 import pytesseract
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -22,32 +22,41 @@ async def cmd_start(message: types.Message):
   await message.answer("Надішли мені квитанцію Мій Господин")
 
 
-# Покращена функція розпізнавання тексту зі скріншотів з підвищенням чіткості
-def extract_text_from_image(image_path: str) -> str:
+# Потужне покращення для фото з екранів (знищує бліки та витягує текст)
+def extract_text_from_photo(image_path: str) -> str:
   try:
     img = Image.open(image_path)
-    # Збільшуємо розмір зображення в 2 рази для кращого розпізнавання дрібного тексту
+    # Збільшуємо роздільну здатність
     img = img.resize((img.width * 2, img.height * 2), Image.Resampling.LANCZOS)
-    # Переводимо в чорно-біле для кращого контрасту
+    # Робимо чорно-білим
     img = img.convert('L')
-    # Збільшуємо контраст
-    enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(2.0)
+    # Автоконтраст для виділення тексту на фоні бліків
+    img = ImageOps.autocontrast(img, cutoff=2)
     
-    # Зчитуємо текст
-    text = pytesseract.image_to_string(img, lang='ukr+eng')
+    # Використовуємо OCR з конфігурацією для блоків тексту (--psm 6)
+    custom_config = r'--oem 3 --psm 6'
+    text = pytesseract.image_to_string(img, lang='ukr+eng', config=custom_config)
     return text
   except Exception as e:
-    logging.error(f"Помилка OCR обробки: {e}")
+    logging.error(f"Помилка обробки фото: {e}")
     return ""
 
 
 async def process_and_reply(message: types.Message, extracted_text: str):
-  # Шукаємо 16-значний код квитанції (наприклад, T20K-357H-T17C-H7PH)
-  code_match = re.search(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}", extracted_text)
+  # Шукаємо код квитанції: або стандартний (4 групи по 4 символи), або код ПриватБанку (формат P24...)
+  code_match = re.search(r"([A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}|P24[A-Z0-9]{15,20})", extracted_text)
 
-  if code_match:
-    receipt_code = code_match.group(0)
+  # Якщо регулярний вираз не зловив автоматично, пробуємо витягти по ключовому слову "Код документа"
+  if not code_match:
+    doc_code_search = re.search(r"(?:код\s*документа|код)\s*[:\-]?\s*([A-Z0-9P24\-]{10,25})", extracted_text, re.IGNORECASE)
+    if doc_code_search:
+      receipt_code = doc_code_search.group(1).replace(" ", "").strip()
+    else:
+      receipt_code = None
+  else:
+    receipt_code = code_match.group(0).replace(" ", "").strip()
+
+  if receipt_code:
     await message.answer(
         f"🔍 Знайдено код квитанції: `{receipt_code}`\n"
         f"🌐 Перевіряю через державну базу...",
@@ -55,6 +64,7 @@ async def process_and_reply(message: types.Message, extracted_text: str):
     )
 
     try:
+      # Деякі коди ПриватБанку пробиваються через загальний API або через пряме посилання
       check_url = f"https://check.gov.ua/api/receipts/{receipt_code}"
       response = requests.get(check_url, timeout=10)
 
@@ -66,9 +76,7 @@ async def process_and_reply(message: types.Message, extracted_text: str):
           payee = data.get("payeeName", "Не вказано")
           payment_date = data.get("paymentDate", "Не вказано")
           
-          # ВИПРАВЛЕННЯ 404: Офіційне робоче посилання на перевірку/документ в системі check.gov.ua
           correct_receipt_url = f"https://check.gov.ua/{receipt_code}"
-          
           keyboard = InlineKeyboardMarkup(inline_keyboard=[
               [InlineKeyboardButton(text="📥 Відкрити квитанцію в базі", url=correct_receipt_url)]
           ])
@@ -84,9 +92,15 @@ async def process_and_reply(message: types.Message, extracted_text: str):
               reply_markup=keyboard
           )
         else:
+          # Якщо в API немає, але код є — даємо пряме посилання на перевірку в держсистемі
+          keyboard = InlineKeyboardMarkup(inline_keyboard=[
+              [InlineKeyboardButton(text="📥 Перевірити за кодом", url=f"https://check.gov.ua/{receipt_code}")]
+          ])
           await message.answer(
-              f"❌ Квитанцію з кодом `{receipt_code}` не знайдено в державній базі, Мій Господин.",
-              parse_mode="Markdown"
+              f"✅ Код документа витягнуто: `{receipt_code}`\n"
+              f"Мій Господин, перевірте документ за посиланням нижче ⬇️",
+              parse_mode="Markdown",
+              reply_markup=keyboard
           )
       else:
         await message.answer(
@@ -99,7 +113,7 @@ async def process_and_reply(message: types.Message, extracted_text: str):
       await message.answer(
           f"✅ Код знайдено: `{receipt_code}`\n\n"
           f"📥 Офіційне посилання: https://check.gov.ua/{receipt_code}",
-            parse_mode="Markdown"
+          parse_mode="Markdown"
       )
   else:
     await message.answer("Не вдалося розпізнати код квитанції Мій Господин. Надішли чіткіший скріншот або файл PDF.")
@@ -121,39 +135,4 @@ async def handle_document(message: types.Message):
       for page in pdf.pages:
         extracted_text += page.extract_text() or ""
   except Exception as e:
-    logging.error(f"Помилка читання PDF: {e}")
-
-  if os.path.exists(temp_filename):
-    os.remove(temp_filename)
-
-  await process_and_reply(message, extracted_text)
-
-
-# Обробка скріншотів з покращеним зчитуванням дрібного тексту
-@dp.message(F.photo)
-async def handle_photo(message: types.Message):
-  await message.answer("⏳ Зчитую дрібний текст зі скріншота Мій Господин...")
-  
-  file_id = message.photo[-1].file_id
-  file_info = await bot.get_file(file_id)
-  downloaded_file = await bot.download_file(file_info.file_path)
-  
-  temp_filename = "temp_photo.jpg"
-  with open(temp_filename, "wb") as f:
-    f.write(downloaded_file.read())
-
-  # Використовуємо функцію з підвищенням контрасту та масштабуванням для дрібного шрифту
-  extracted_text = extract_text_from_image(temp_filename)
-
-  if os.path.exists(temp_filename):
-    os.remove(temp_filename)
-
-  await process_and_reply(message, extracted_text)
-
-
-async def main():
-  await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-  asyncio.run(main())
+    logging.error(f"По
