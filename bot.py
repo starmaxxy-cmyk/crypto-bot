@@ -18,19 +18,15 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
   await message.answer(
-      "Привіт! 👋 Надішли мені квитанцію **як документ (PDF) або скріншот (фото)**, "
-      "і я перевірю її та надішлю тобі назад із підтвердженням."
+      "Надішли мені квитанцію Мій Господин"
   )
 
 
-# Універсальна перевірка та відправка назад
-async def process_and_reply(message: types.Message, file_bytes: bytes, file_name: str, extracted_text: str):
-  # Шукаємо 16-значний код квитанції (наприклад, 20K-357H-T17C-H7PH або схожий за шаблоном)
-  # Або шукаємо у будь-якому форматі код квитанції
+# Універсальна перевірка та відправка файлу назад
+async def verify_and_return_file(message: types.Message, file_bytes: bytes, file_name: str, extracted_text: str):
+  # Шукаємо 16-значний код квитанції у форматі check.gov.ua
   code_match = re.search(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}", extracted_text)
 
-  # Якщо раптом у Monobank інший формат коду, можемо пошукати ключові слова або числа, 
-  # але поки шукаємо стандартний паттерн check.gov.ua
   if code_match:
     receipt_code = code_match.group(0)
     
@@ -48,11 +44,11 @@ async def process_and_reply(message: types.Message, file_bytes: bytes, file_name
           await message.answer_document(
               input_file,
               caption=(
-                  f"✅ **Квитанція дійсна та перевірена!**\n"
+                  f"✅ **Квитанція успішно перевірена!**\n"
                   f"💵 **Сума:** {sum_uah} грн\n"
                   f"👤 **Відправник:** {payer}\n"
                   f"🔢 **Код:** `{receipt_code}`\n\n"
-                  f"📄 Ось твоя квитанція ⬆️"
+                  f"📄 Ось твоя квитанція Мій Господин ⬆️"
               ),
               parse_mode="Markdown"
           )
@@ -60,7 +56,7 @@ async def process_and_reply(message: types.Message, file_bytes: bytes, file_name
           input_file = BufferedInputFile(file_bytes, filename=file_name)
           await message.answer_document(
               input_file,
-              caption=f"⚠️ Код `{receipt_code}` знайдено, але в базі check.gov.ua запис відсутній.",
+              caption=f"⚠️ Код `{receipt_code}` знайдено, але в державній базі запис відсутній.",
               parse_mode="Markdown"
           )
       else:
@@ -79,17 +75,17 @@ async def process_and_reply(message: types.Message, file_bytes: bytes, file_name
           parse_mode="Markdown"
       )
   else:
-    # Якщо код автоматично не знайшовся на фото (оскільки на скріншотах текст картинкою), 
-    # просто повертаємо файл/фото назад і пишемо підказку
+    # Якщо код не витягнувся автоматично (наприклад, із картинки), 
+    # все одно повертаємо файл/фото назад Мій Господин
     input_file = BufferedInputFile(file_bytes, filename=file_name)
     await message.answer_document(
         input_file,
-        caption="⚠️ Не вдалося автоматично витягнути 16-значний код із цього зображення. Але саму квитанцію повертаю тобі назад ⬆️",
+        caption="Надішли мені квитанцію Мій Господин",
         parse_mode="Markdown"
     )
 
 
-# Обробка PDF-файлів
+# Обробка PDF-документів
 @dp.message(F.document)
 async def handle_document(message: types.Message):
   file_info = await bot.get_file(message.document.file_id)
@@ -97,39 +93,4 @@ async def handle_document(message: types.Message):
   file_bytes = downloaded_file.read()
 
   temp_filename = "temp_receipt.pdf"
-  with open(temp_filename, "wb") as f:
-    f.write(file_bytes)
-
-  extracted_text = ""
-  try:
-    with pdfplumber.open(temp_filename) as pdf:
-      for page in pdf.pages:
-        extracted_text += page.extract_text() or ""
-  except Exception as e:
-    logging.error(f"Помилка читання PDF: {e}")
-
-  if os.path.exists(temp_filename):
-    os.remove(temp_filename)
-
-  await process_and_reply(message, file_bytes, message.document.file_name, extracted_text)
-
-
-# Обробка звичайних фото/скріншотів
-@dp.message(F.photo)
-async def handle_photo(message: types.Message):
-  file_id = message.photo[-1].file_id
-  file_info = await bot.get_file(file_id)
-  downloaded_file = await bot.download_file(file_info.file_path)
-  file_bytes = downloaded_file.read()
-
-  # Оскільки на скріншоті з Monobank (як на твоєму) текст зображений графічно, 
-  # для прямого парсингу коду краще працює PDF, але давай приймати фото і відправляти його назад
-  await process_and_reply(message, file_bytes, "receipt_screenshot.jpg", extracted_text="")
-
-
-async def main():
-  await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-  asyncio.run(main())
+  with open(temp
