@@ -42,22 +42,27 @@ async def handle_receipt(message: types.Message):
     code_match = re.search(r'(?:[A-Za-z0-9]{15,45}|[A-Z0-9-]{15,})', extracted_text)
     receipt_code = code_match.group(0) if code_match else "Не знайдено"
 
-    # 2. Надійний пошук суми (працює з пробілами між тисячами, наприклад "43 683.00")
+    # 2. Шукаємо ВСІ числа з копійками формату 12345.00 або 12 345.00
     amount = "Не вказано"
-    amount_match = re.search(r'Сума\s*\(грн\)\s*([0-9\s]+[\.,]\d{2})', extracted_text, re.IGNORECASE)
-    if amount_match:
-        amount = amount_match.group(1).replace(' ', '').replace(',', '.')
-    else:
-        amounts = re.findall(r'\b([0-9]{1,3}(?:\s[0-9]{3})+[\.,]\d{2})\b', extracted_text)
-        if amounts:
-            amount = amounts[0].replace(' ', '').replace(',', '.')
-        else:
-            # Запасний варіант: шукаємо будь-яке число з копійками біля слова грн
-            simple_match = re.search(r'([0-9\s]+[\.,]\d{2})\s*(?:грн|UAH)', extracted_text, re.IGNORECASE)
-            if simple_match:
-                amount = simple_match.group(1).replace(' ', '').replace(',', '.')
+    # Знаходимо всі входження великих сум (від 10 грн і вище з копійками)
+    found_amounts = re.findall(r'\b([0-9]{1,3}(?:\s?[0-9]{3})*[\.,]\d{2})\b', extracted_text)
+    
+    valid_amounts = []
+    for a in found_amounts:
+        clean_a = a.replace(' ', '').replace(',', '.')
+        try:
+            val = float(clean_a)
+            # Відсікаємо комісії (0.00 тощо) або дрібні числа, залишаємо реальні суми платежу
+            if val > 1.0: 
+                valid_amounts.append(val)
+        except:
+            pass
 
-    # 3. Парсинг дати та часу (наприклад, 04.11.2026 20:28)
+    if valid_amounts:
+        # Беремо найбільшу суму на квитанції (це і буде сума переказу 43683.00)
+        amount = f"{max(valid_amounts):.2f}"
+
+    # 3. Парсинг дати та часу
     date_match = re.search(r'(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})', extracted_text)
     receipt_date = date_match.group(1) if date_match else "Не вказано"
 
