@@ -9,14 +9,9 @@ import pytesseract
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiohttp import web
 
-TOKEN = "9100600793:AAEIyt2CLU7KBEQap0nhfBWvtVKK7tv2Dms"
-
-# Налаштування для вебхуків на Render (Render автоматично дає порт)
-PORT = int(os.environ.get("PORT", 10000))
-# URL твого сервісу на Render (заміни на своє реальне посилання з render.com)
-WEBHOOK_URL = f"https://crypto-bot-xxxx.onrender.com/webhook"  # або бот сам підхопить, якщо налаштуємо нижче
+# Бот автоматично візьме токен із налаштувань Environment на Render
+TOKEN = os.environ.get("BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -178,42 +173,9 @@ async def handle_photo(message: types.Message):
 
 
 async def main():
-  # Налаштування вебхука для Render
-  # Render дає публічне посилання на твій сервіс (наприклад, https:// твого_сервісу .onrender.com)
-  # Увімкнемо автоматичну реєстрацію через змінну середовища або прямий URL
-  app = web.Application()
-  
-  # Проста штурмова перевірка для Render healthcheck
-  async def handle_ping(request):
-    return web.Response(text="Bot is running!")
-
-  app.router.add_get("/", handle_ping)
-
-  # Налаштування обробника апдейтів від Telegram
-  from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-  
-  webhook_requests_handler = SimpleRequestHandler(
-      dispatcher=dp,
-      bot=bot,
-  )
-  webhook_requests_handler.register(app, path="/webhook")
-  setup_application(app, dp, bot=bot)
-
-  # Отримуємо зовнішній URL з Render (або задаємо вручну)
-  # Render автоматично надає RENDER_EXTERNAL_URL у змінних середовища
-  render_url = os.environ.get("RENDER_EXTERNAL_URL")
-  if render_url:
-    webhook_url = f"{render_url}/webhook"
-    await bot.set_webhook(webhook_url)
-    logging.info(f"Webhook встановлено на: {webhook_url}")
-
-  runner = web.AppRunner(app)
-  await runner.setup()
-  site = web.TCPSite(runner, "0.0.0.0", PORT)
-  await site.start()
-  
-  logging.info(f"Сервер запущено на порту {PORT}")
-  await asyncio.Event().wait()
+  # Очищаємо будь-які старі вебхуки перед стартом polling, щоб не було конфліктів
+  await bot.delete_webhook(drop_pending_updates=True)
+  await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
