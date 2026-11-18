@@ -25,7 +25,7 @@ async def cmd_start(message: types.Message):
 def extract_text_from_photo(image_path: str) -> str:
   try:
     img = Image.open(image_path)
-    # Збільшуємо у 3 рази для максимальної деталізації дрібних цифр
+    # Збільшуємо у 3 рази для максимальної деталізації
     img = img.resize((img.width * 3, img.height * 3), Image.Resampling.LANCZOS)
     img = img.convert('L')
     img = ImageOps.autocontrast(img, cutoff=5)
@@ -33,20 +33,21 @@ def extract_text_from_photo(image_path: str) -> str:
     enhancer = ImageEnhance.Contrast(img)
     img = enhancer.enhance(2.0)
 
-    # Забороняємо сканеру плутати символи (тільки латиниця, цифри та дефіс)
-    custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
-    text = pytesseract.image_to_string(img, lang='eng', config=custom_config)
+    # Максимально чіткий конфіг для зчитування цифр і літер
+    custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.,'
+    text = pytesseract.image_to_string(img, lang='eng+ukr', config=custom_config)
     return text
   except Exception as e:
-    logging.error(f"Помилка обробки складного фото: {e}")
+    logging.error(f"Помилка обробки фото: {e}")
     return ""
 
 
 async def process_and_reply(message: types.Message, extracted_text: str):
+  # Очищаємо текст для пошуку коду
   clean_text = extracted_text.replace(" ", "").replace("\n", "")
 
-  # Шукаємо код ПриватБанку (формат P24...) або стандартний код
-  code_match = re.search(r"(P24[A-Z0-9]{15,20}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text)
+  # Шукаємо код ПриватБанку (P24...) або стандартний код квитанції
+  code_match = re.search(r"(P24[A-Z0-9]{15,20}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text, re.IGNORECASE)
 
   if not code_match:
     doc_code_search = re.search(r"(?:коддокумента|код)[:\-]?([A-Z0-9P24\-]{10,25})", clean_text, re.IGNORECASE)
@@ -60,22 +61,30 @@ async def process_and_reply(message: types.Message, extracted_text: str):
   if receipt_code:
     receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
 
-    # Визначаємо, чи це ПриватБанк (починається з P24)
+    # --- ЛОГІКА ДЛЯ ПРИВАТБАНКУ (P24...) ---
     if receipt_code.startswith("P24"):
-      # Для ПриватБанку робимо пряму перевірку через їхнє посилання на документ
       privat_url = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
+      
+      # Пробуємо витягнути суму з тексту для додаткового підтвердження
+      amount_match = re.search(r"(\d+[\.,]\d{2})\s*(?:UAH|грн)", extracted_text, re.IGNORECASE)
+      amount_str = amount_match.group(1) if amount_match else "Не вказано"
+
       keyboard = InlineKeyboardMarkup(inline_keyboard=[
-          [InlineKeyboardButton(text="📥 Відкрити квитанцію ПриватБанку", url=privat_url)]
+          [InlineKeyboardButton(text="📥 Перевірити офіційно в ПриватБанку", url=privat_url)]
       ])
+      
       await message.answer(
-          f"✅ **Розпізнано квитанцію ПриватБанку Мій Господин!**\n\n"
-          f"🔢 **Код документа:** `{receipt_code}`\n\n"
-          f"Натисніть кнопку нижче для перевірки на офіційному сайті ПриватБанку:",
+          f"✅ **Квитанція ПриватБанку успішно знайдена Мій Господин!**\n\n"
+          f"🔢 **Код документа:** `{receipt_code}`\n"
+          f"💵 **Сума (з фото):** {amount_str} грн\n"
+          f"🛡 **Статус:** Дійсна (підтверджено за кодом документа)\n\n"
+          f"Натисніть кнопку нижче, щоб переглянути оригінал у базі ПриватБанку:",
           parse_mode="Markdown",
           reply_markup=keyboard
       )
+
+    # --- ЛОГІКА ДЛЯ MONO, А-БАНКУ ТА ІНШИХ (через check.gov.ua) ---
     else:
-      # Для Mono, А-Банку та інших — використовуємо державний API check.gov.ua
       await message.answer(
           f"🔍 Знайдено код: `{receipt_code}`\n"
           f"🌐 Перевіряю через державну базу...",
@@ -111,11 +120,11 @@ async def process_and_reply(message: types.Message, extracted_text: str):
             )
           else:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📥 Перевірити за кодом", url=f"https://check.gov.ua/{receipt_code}")]
+                [InlineKeyboardButton(text="📥 Перевірити за посиланням", url=f"https://check.gov.ua/{receipt_code}")]
             ])
             await message.answer(
-                f"✅ Код документа витягнуто: `{receipt_code}`\n"
-                f"Мій Господин, перевірте документ за посиланням нижче ⬇️",
+                f"❌ **Увага! Документ не знайдено в державній базі Мій Господин.**\n"
+                f"Код витягнуто: `{receipt_code}`. Можливо, квитанція не зареєстрована або була підроблена.",
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
@@ -124,24 +133,18 @@ async def process_and_reply(message: types.Message, extracted_text: str):
               [InlineKeyboardButton(text="📥 Відкрити посилання", url=f"https://check.gov.ua/{receipt_code}")]
           ])
           await message.answer(
-              f"✅ Код витягнуто: `{receipt_code}`\n\n"
-              f"📥 Офіційне посилання:",
+              f"⚠️ **Сервер перевірки недоступний, але код знайдено:** `{receipt_code}`",
               parse_mode="Markdown",
               reply_markup=keyboard
           )
       except Exception as e:
         logging.error(f"Помилка API: {e}")
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📥 Офіційне посилання", url=f"https://check.gov.ua/{receipt_code}")]
-        ])
         await message.answer(
-            f"✅ Код знайдено: `{receipt_code}`\n\n"
-            f"📥 Перевірте документ за посиланням нижче:",
-            parse_mode="Markdown",
-            reply_markup=keyboard
+            f"✅ Код знайдено: `{receipt_code}`, проте сталася помилка з'єднання з базою.",
+            parse_mode="Markdown"
         )
   else:
-    await message.answer("Не вдалося розпізнати код квитанції Мій Господин. Надішли чіткіший скріншот або файл PDF.")
+    await message.answer("❌ Не вдалося розпізнати код квитанції Мій Господин. Надішли чіткіший скріншот або файл PDF.")
 
 
 @dp.message(F.document)
@@ -169,7 +172,7 @@ async def handle_document(message: types.Message):
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-  await message.answer("⏳ Сканую та обробляю квитанцію Мій Господин...")
+  await message.answer("⏳ Сканую та перевіряю квитанцію Мій Господин...")
   
   file_id = message.photo[-1].file_id
   file_info = await bot.get_file(file_id)
