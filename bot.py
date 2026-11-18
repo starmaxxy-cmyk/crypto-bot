@@ -78,20 +78,22 @@ async def handle_receipt(message: types.Message):
     if os.path.exists(local_filename):
         os.remove(local_filename)
 
-    # Парсинг коду квитанції
+    # 1. Парсинг коду квитанції
     code_match = re.search(r'(?:[A-Za-z0-9]{15,45}|[A-Z0-9-]{15,})', extracted_text)
     receipt_code = code_match.group(0) if code_match else "Не знайдено"
 
-    # Парсинг суми
-    amount_match = re.search(r'(\d+[\s\.,]\d{2})\s*(?:грн|UAH|uah|ГРН)', extracted_text)
-    if not amount_match:
-        amount_match = re.search(r'(?:Сума|Сумма|Total|Amount)[\s:]*(\d+[\s\.,]\d{2})', extracted_text, re.IGNORECASE)
-    
+    # 2. Покращений парсинг суми (шукаємо чітко біля слів Сума/грн або великі числа з копійками)
+    amount = "Не вказано"
+    # Шукаємо шаблони типу "Сума: 1234.56" або схожі
+    amount_match = re.search(r'(?:Сума|Сумма|Total|Amount|платпежу|оплати)[\s:]*([0-9\s]+[\.,]\d{2})', extracted_text, re.IGNORECASE)
     if amount_match:
         amount = amount_match.group(1).replace(' ', '').replace(',', '.')
     else:
-        amounts = re.findall(r'\b\d{2,6}[\.,]\d{2}\b', extracted_text)
-        amount = amounts[-1] if amounts else "Не вказано"
+        # Шукаємо всі грошові суми у тексті і беремо найбільш релевантну (не занадто малу комісійну)
+        amounts = re.findall(r'\b([1-9]\d{1,5}[\.,]\d{2})\b', extracted_text)
+        if amounts:
+            # Беремо максимальну або останню знайдену суму (зазвичай загальна сума платіжки найбільша)
+            amount = amounts[-1].replace(' ', '').replace(',', '.')
 
     # Посилання для перевірки
     if "P24" in receipt_code or "PRIVAT" in extracted_text.upper():
@@ -102,7 +104,7 @@ async def handle_receipt(message: types.Message):
         bank_name = "check.gov.ua"
 
     response_text = (
-        f"✅ Номер квитанції: {receipt_code}\n\n"
+        f"✅ Номер квитанції: `{receipt_code}`\n\n"
         f"💵 Сума: {amount} грн\n"
         f"📅 Дата: Не вказано\n\n"
         f"⚠️ Квитанція не перевірена, будь ласка, перевірте її самі, бо я тупий!!!\n\n"
@@ -113,7 +115,7 @@ async def handle_receipt(message: types.Message):
         [InlineKeyboardButton(text=f"🏛 Відкрити в {bank_name}", url=check_url)]
     ])
 
-    await status_msg.edit_text(response_text, reply_markup=keyboard)
+    await status_msg.edit_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 # ==========================================
@@ -124,23 +126,18 @@ async def catch_exchange_orders(message: types.Message):
     user_id = message.from_user.id
     text = message.text or message.caption or ""
     
-    # Ловимо тільки повідомлення, які є заявками (мають # та Exchange)
     if "#" not in text or "Exchange:" not in text:
         return 
 
-    # Витягуємо номер заявки
     order_id_match = re.search(r'#(\d+)', text)
     order_id = order_id_match.group(1) if order_id_match else "00000"
     
-    # Витягуємо IN
     in_match = re.search(r'IN:\s*([^\n]+)', text)
     in_text = in_match.group(1).strip() if in_match else ""
     
-    # Витягуємо OUT
     out_match = re.search(r'OUT:\s*([^\n]+)', text)
     out_text = out_match.group(1).split('\n')[0].strip() if out_match else ""
 
-    # Формуємо чистий рядок під таблицю
     cleaned_line = f"#{order_id}. Exchange: IN: {in_text} OUT: {out_text}"
     
     if user_id not in order_batches:
