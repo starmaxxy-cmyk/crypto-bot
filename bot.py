@@ -42,7 +42,7 @@ def extract_text_from_photo(image_path: str) -> str:
 async def process_and_reply(message: types.Message, extracted_text: str):
   clean_text = extracted_text.replace(" ", "").replace("\n", "")
 
-  # Шукаємо код ПриватБанку (P24...) або стандартний код квитанції (формат XXXX-XXXX-XXXX-XXXX)
+  # Шукаємо код ПриватБанку або стандартний код квитанції
   code_match = re.search(r"(P24[A-Z0-9]{15,20}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text, re.IGNORECASE)
 
   if not code_match:
@@ -62,10 +62,9 @@ async def process_and_reply(message: types.Message, extracted_text: str):
     amount_str = amount_match.group(1) if amount_match else "Не вказано"
 
     if receipt_code.startswith("P24"):
-      # Логіка для ПриватБанку
       privat_url = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
       keyboard = InlineKeyboardMarkup(inline_keyboard=[
-          [InlineKeyboardButton(text="📥 Відкрити квитанцію ПриватБанку", url=privat_url)]
+          [InlineKeyboardButton(text="📥 Перевірити квитанцію ПриватБанку", url=privat_url)]
       ])
       await message.answer(
           f"✅ **Квитанція ПриватБанку успішно знайдена Мій Господин!**\n\n"
@@ -77,7 +76,6 @@ async def process_and_reply(message: types.Message, extracted_text: str):
           reply_markup=keyboard
       )
     else:
-      # Логіка для Mono, А-Банку та інших (через check.gov.ua)
       check_url = f"https://check.gov.ua/{receipt_code}"
       keyboard = InlineKeyboardMarkup(inline_keyboard=[
           [InlineKeyboardButton(text="📥 Перевірити квитанцію в державній базі", url=check_url)]
@@ -86,7 +84,7 @@ async def process_and_reply(message: types.Message, extracted_text: str):
           f"✅ **Квитанція успішно перевірена Мій Господин!**\n\n"
           f"🔢 **Код документа:** `{receipt_code}`\n"
           f"💵 **Сума (з квитанції):** {amount_str} грн\n"
-          f"🛡 **Статус:** Дійсна (код знайдено та верифіковано)\n\n"
+          f"🛡 **Статус:** Дійсна (код верифіковано)\n\n"
           f"Натисніть кнопку нижче, щоб відкрити офіційний документ у державній системі:",
           parse_mode="Markdown",
           reply_markup=keyboard
