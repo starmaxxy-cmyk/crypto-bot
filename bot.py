@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile
 
-TOKEN = "9033168856:AAG78hzj9yZNMjaNohP20hhe7W9yUbos1Bc"
+TOKEN = "9015943013:AAFOf-TUX4AeklQ_JWqsCs34Wju_cEHrRbE"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
