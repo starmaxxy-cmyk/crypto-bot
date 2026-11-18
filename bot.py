@@ -42,17 +42,20 @@ async def handle_receipt(message: types.Message):
     code_match = re.search(r'(?:[A-Za-z0-9]{15,45}|[A-Z0-9-]{15,})', extracted_text)
     receipt_code = code_match.group(0) if code_match else "Не знайдено"
 
-    # 2. Виправлений парсинг суми (враховує пробіли між тисячами, наприклад "43 683.00")
+    # 2. Надійний пошук суми (працює з пробілами між тисячами, наприклад "43 683.00")
     amount = "Не вказано"
     amount_match = re.search(r'Сума\s*\(грн\)\s*([0-9\s]+[\.,]\d{2})', extracted_text, re.IGNORECASE)
     if amount_match:
-        # Прибираємо пробіли всередині числа (43 683.00 -> 43683.00)
         amount = amount_match.group(1).replace(' ', '').replace(',', '.')
     else:
-        # Загальний запасний пошук чисел з пробілами
         amounts = re.findall(r'\b([0-9]{1,3}(?:\s[0-9]{3})+[\.,]\d{2})\b', extracted_text)
         if amounts:
             amount = amounts[0].replace(' ', '').replace(',', '.')
+        else:
+            # Запасний варіант: шукаємо будь-яке число з копійками біля слова грн
+            simple_match = re.search(r'([0-9\s]+[\.,]\d{2})\s*(?:грн|UAH)', extracted_text, re.IGNORECASE)
+            if simple_match:
+                amount = simple_match.group(1).replace(' ', '').replace(',', '.')
 
     # 3. Парсинг дати та часу (наприклад, 04.11.2026 20:28)
     date_match = re.search(r'(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})', extracted_text)
