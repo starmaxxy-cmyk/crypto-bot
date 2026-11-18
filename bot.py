@@ -31,7 +31,6 @@ def extract_full_text(image_path: str) -> str:
     enhancer = ImageEnhance.Contrast(img)
     img = enhancer.enhance(2.5)
 
-    # Використовуємо комбінацію англійської та української мов
     text = pytesseract.image_to_string(img, lang='eng+ukr')
     return text
   except Exception as e:
@@ -88,12 +87,9 @@ async def handle_photo(message: types.Message):
 
 
 async def process_receipt_data(message: types.Message, full_text: str):
-  # Виводимо весь розпізнаний текст у логи Render для зручності налаштування
-  logging.info(f"--- ПОВНИЙ ТЕКСТ З КВИТАНЦІЇ ---\n{full_text}\n-----------------------------")
-
   clean_text_no_spaces = full_text.replace(" ", "").replace("\n", "")
 
-  # 1. Пошук номера квитанції
+  # 1. Номер квитанції
   code_match = re.search(r"(P24[A-Z0-9]{10,25}D[A-Z0-9]{1,6}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text_no_spaces, re.IGNORECASE)
   if not code_match:
     doc_code_search = re.search(r"(?:квитанція|коддокумента|код)[:\-]?\s*([A-Z0-9P24\-]{10,30})", full_text, re.IGNORECASE)
@@ -103,44 +99,51 @@ async def process_receipt_data(message: types.Message, full_text: str):
 
   receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
 
-  # 2. Пошук Відправника (шукаємо ПІБ після слова «Відправник» або «Ім'я» у блоці відправника)
+  # 2. Відправник
   sender_str = "Не вказано"
-  sender_block = re.search(r"Відправник.*?(?=Одержувач|Отримувач|$)", full_text, re.DOTALL | re.IGNORECASE)
-  if sender_block:
-    name_match = re.search(r"(?:Ім'?я|ПІБ)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s]{6,40})", sender_block.group(0))
-    if name_match:
-      sender_str = name_match.group(1).strip()
+  sender_section = re.search(r"Відправник(.*?)(?=Одержувач|Отримувач|$)", full_text, re.DOTALL | re.IGNORECASE)
+  if sender_section:
+    s_text = sender_section.group(1)
+    s_match = re.search(r"(?:Ім'?я|ПІБ)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s]{6,45})", s_text)
+    if s_match:
+      sender_str = s_match.group(1).strip()
 
-  # 3. Пошук Отримувача та його карти/рахунку
+  # 3. Одержувач та картка
   payee_str = "Не вказано"
-  payee_block = re.search(r"(?:Одержувач|Отримувач).*?(?=Деталі|Сума|$)", full_text, re.DOTALL | re.IGNORECASE)
-  if payee_block:
-    block_text = payee_block.group(0)
-    p_name = re.search(r"(?:Ім'?я)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s\.]{2,25})", block_text)
-    p_card = re.search(r"(?:UA\d{2}\d{4,}\d*|\d{4}\s?\*{4}\s?\*{4}\s?\d{4})", block_text)
+  payee_section = re.search(r"(?:Одержувач|Отримувач)(.*?)(?=Деталі|Сума|$)", full_text, re.DOTALL | re.IGNORECASE)
+  if payee_section:
+    p_text = payee_section.group(1)
+    p_name = re.search(r"(?:Ім'?я)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s\.]{2,30})", p_text)
+    p_card = re.search(r"(?:UA\d{2}\d{4,}\d*|\d{4}\s?\*{4}\s?\*{4}\s?\d{4})", p_text)
     
-    name_val = p_name.group(1).strip() if p_name else ""
-    card_val = p_card.group(0).strip() if p_card else ""
-    if name_val or card_val:
-      payee_str = f"{name_val}, {card_val}".strip(", ")
+    n_val = p_name.group(1).strip() if p_name else ""
+    c_val = p_card.group(0).strip() if p_card else ""
+    if n_val or c_val:
+      payee_str = f"{n_val}, {c_val}".strip(", ")
 
-  # Якщо блоковий пошук не спрацював, шукаємо просто по рядках
   if payee_str == "Не вказано":
-    alt_payee = re.search(r"(?:Одержувач|Отримувач)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s,\*\-\d]{5,50})", full_text)
-    if alt_payee:
-      payee_str = alt_payee.group(1).strip()
+    alt_p = re.search(r"(?:Одержувач|Отримувач)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s,\*\-\d]{5,50})", full_text)
+    if alt_p:
+      payee_str = alt_p.group(1).strip()
 
-  # 4. Пошук Суми (у Monobank це зазвичай сума поруч з «Сума (грн)» або просто число з копійками)
+  # 4. Виправлене витягування Суми (щоб не чіпляти дрібні комісії типу 0.00 і брати повне число)
   amount_str = "Не вказано"
-  amount_match = re.search(r"Сума\s*(?:\(грн\))?[:\s]*([\d\s\.,]+)", full_text, re.IGNORECASE)
-  if amount_match:
-    amount_str = amount_match.group(1).replace(" ", "").strip()
-  else:
-    alt_amount = re.search(r"(\d{1,3}(?:\s?\d{3})*[\.,]\d{2})\s*(?:₴|грн|UAH)?", full_text, re.IGNORECASE)
-    if alt_amount:
-      amount_str = alt_amount.group(1).replace(" ", "").strip()
+  # Шукаємо суму літерами або ціле число з деталей транзакції
+  det_section = re.search(r"Деталі транзакції(.*?)(?:Операційний|$)", full_text, re.DOTALL | re.IGNORECASE)
+  search_scope = det_section.group(1) if det_section else full_text
 
-  # 5. Пошук Дати та часу операції
+  # Шукаємо великі суми (наприклад, 20000.00 або суми з пробілами)
+  amount_matches = re.findall(r"(?:Сума\s*(?:\(грн\))?[:\s]*)?(\d{1,3}(?:\s?\d{3})*[\.,]\d{2})", search_scope, re.IGNORECASE)
+  if amount_matches:
+    # Беремо найбільшу знайдену суму у блоці деталей (щоб відкинути копійки/комісії на кшталт 0.00)
+    cleaned_amounts = [float(amt.replace(" ", "").replace(",", ".")) for amt in amount_matches if float(amt.replace(" ", "").replace(",", ".")) > 1.0]
+    if cleaned_amounts:
+      max_amt = max(cleaned_amounts)
+      amount_str = f"{max_amt:.2f}"
+    else:
+      amount_str = amount_matches[0].replace(" ", "")
+
+  # 5. Дата та час операції
   date_str = "Не вказано"
   date_match = re.search(r"(?:Дата і час операції|Дата)[:\s]*(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text, re.IGNORECASE)
   if not date_match:
@@ -154,7 +157,7 @@ async def process_receipt_data(message: types.Message, full_text: str):
   if purpose_match:
     purpose_str = purpose_match.group(1).strip()
 
-  # Формуємо посилання для перевірки
+  # Формуємо посилання
   if receipt_code.startswith("P24"):
     service_url = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
     service_name = "ПриватБанку"
@@ -166,9 +169,9 @@ async def process_receipt_data(message: types.Message, full_text: str):
       [InlineKeyboardButton(text=f"📥 Відкрити в {service_name}", url=service_url)]
   ])
 
+  # Фінальний формат повідомлення
   await message.answer(
-      f"📋 **Детальний звіт по квитанції Мій Господин:**\n\n"
-      f"🔢 **Номер квитанції:** `{receipt_code}`\n"
+      f"✅ **Номер квитанції:** `{receipt_code}`\n\n"
       f"👤 **Відправник:** {sender_str}\n"
       f"🏢 **Отримувач / Картка:** {payee_str}\n"
       f"💵 **Сума:** {amount_str} грн\n"
@@ -176,20 +179,4 @@ async def process_receipt_data(message: types.Message, full_text: str):
       f"📝 **Призначення:** {purpose_str}\n\n"
       f"Натисніть кнопку нижче для переходу до офіційного джерела:",
       parse_mode="Markdown",
-      reply_markup=keyboard
-  )
-
-
-async def main():
-  await asyncio.sleep(5)
-  try:
-    await bot.delete_webhook(drop_pending_updates=True)
-  except Exception:
-    pass
-    
-  logging.info("Бот успішно запущено!")
-  await dp.start_polling(bot, handle_signals=False, close_bot_session=True)
-
-
-if __name__ == "__main__":
-  asyncio.run(main())
+      reply_markup
