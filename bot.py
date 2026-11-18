@@ -10,7 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import FSInputFile
 
 # Твій токен бота від BotFather
-TOKEN = "ТВОЇ_ТОКЕН_БОТА_ВІД_BOTFATHER"
+TOKEN = "9033168856:AAGAP6KKPAI7Sb5Tswxmdv4dBBuNFMqISzA"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
