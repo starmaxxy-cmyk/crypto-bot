@@ -2,3 +2,5 @@ aiogram==3.13.1
 requests==2.31.0
 pdfplumber==0.10.3
 Pillow==10.2.0
+easyocr==1.7.1
+numpy==1.26.4
