@@ -31,7 +31,6 @@ def extract_text_from_photo(image_path: str) -> str:
     enhancer = ImageEnhance.Contrast(img)
     img = enhancer.enhance(2.5)
 
-    # Жорсткий білий список: тільки латинські літери, цифри, дефіс, крапка та кома
     custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.,'
     text = pytesseract.image_to_string(img, config=custom_config)
     return text
@@ -77,9 +76,7 @@ async def handle_photo(message: types.Message):
     with open(temp_filename, "wb") as f:
       f.write(downloaded_file.read())
 
-    # Повний текст для читання кирилиці (імена, отримувачі)
     raw_text_full = pytesseract.image_to_string(Image.open(temp_filename), lang='eng+ukr')
-    # Відфільтрований текст для точного пошуку коду
     extracted_text = extract_text_from_photo(temp_filename)
 
     if os.path.exists(temp_filename):
@@ -93,6 +90,13 @@ async def handle_photo(message: types.Message):
 
 async def process_receipt(message: types.Message, extracted_text: str, raw_full_text: str = ""):
   clean_text = extracted_text.replace(" ", "").replace("\n", "")
+  source_details = raw_full_text if raw_full_text else extracted_text
+
+  # Перевірка на ознаки підробки / мальовки у тексті
+  fake_indicators = ["тест", "копія", "зразок", "draft", "test", "макет"]
+  if any(word in source_details.lower() for word in fake_indicators):
+    await message.answer("❌ **УВАГА! Це підробка або тестовий макет Мій Господин!**\n\nДокумент містить ознаки ненадійного файлу.", parse_mode="Markdown")
+    return
 
   # Шукаємо код ПриватБанку у форматі P24...D... або стандартний код квитанції
   code_match = re.search(r"(P24[A-Z0-9]{10,25}D[A-Z0-9]{1,6}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text, re.IGNORECASE)
@@ -107,14 +111,12 @@ async def process_receipt(message: types.Message, extracted_text: str, raw_full_
     receipt_code = code_match.group(0).strip()
 
   if not receipt_code:
-    await message.answer("❌ Не вдалося знайти код квитанції Мій Господин. Надішли чіткіший скріншот.")
+    await message.answer("❌ **Фейк або нерозпізнаний документ!** Не вдалося знайти дійсний код квитанції Мій Господин.", parse_mode="Markdown")
     return
 
   receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
 
-  # Витягуємо суму, дату, отримувача та карту з текстів
-  source_details = raw_full_text if raw_full_text else extracted_text
-
+  # Витягуємо суму, дату, отримувача та карту
   amount_match = re.search(r"(\d+[\.,]\d{2})\s*(?:UAH|грн)", source_details, re.IGNORECASE)
   amount_str = amount_match.group(1) if amount_match else "Не вказано"
 
@@ -127,37 +129,47 @@ async def process_receipt(message: types.Message, extracted_text: str, raw_full_
   card_match = re.search(r"(?:UA\d{2}\d{4,}\d*|\d{4}\s?\*{4}\s?\*{4}\s?\d{4})", source_details)
   card_str = card_match.group(0).strip() if card_match else "Згідно з оригіналом"
 
-  # Формуємо звіт залежно від типу банку
+  # Додаткова валідація: якщо сума не знайдена або виглядає підозріло (наприклад, 0.00 або пуста)
+  if amount_str == "Не вказано" or amount_str.startswith("0,00"):
+    await message.answer(
+        f"❌ **УВАГА! Підозріла або фейкова квитанція!**\n\n"
+        f"🔢 **Знайдений код:** `{receipt_code}`\n"
+        f"⚠️ Сума транзакції відсутня або дорівнює нулю. Документ відхилено.",
+        parse_mode="Markdown"
+    )
+    return
+
+  # Якщо все пройшло перевірку структурної валідності
   if receipt_code.startswith("P24"):
     privat_url = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📥 Відкрити оригінал в ПриватБанку", url=privat_url)]
+        [InlineKeyboardButton(text="📥 Перевірити оригінал у ПриватБанку", url=privat_url)]
     ])
     await message.answer(
-        f"✅ **Квитанція ПриватБанку успішно розпізнана Мій Господин!**\n\n"
+        f"✅ **Квитанція ПриватБанку успішно пройшла валідацію Мій Господин!**\n\n"
         f"🔢 **Код документа:** `{receipt_code}`\n"
         f"💵 **Сума:** {amount_str} грн\n"
         f"🏢 **Отримувач:** {payee_str}\n"
         f"💳 **Картка / Рахунок:** `{card_str}`\n"
         f"📅 **Дата:** {date_str}\n"
-        f"🛡 **Статус:** Документ сформовано за кодом\n\n"
-        f"Натисніть кнопку нижче для перегляду оригіналу в системі банку:",
+        f"🛡 **Статус:** Структура коду та реквізити валідні\n\n"
+        f"Натисніть кнопку нижче для перегляду в системі банку:",
         parse_mode="Markdown",
         reply_markup=keyboard
     )
   else:
     check_url = f"https://check.gov.ua/{receipt_code}"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📥 Відкрити в державній базі check.gov.ua", url=check_url)]
+        [InlineKeyboardButton(text="📥 Відкрити в держреєстрі check.gov.ua", url=check_url)]
     ])
     await message.answer(
-        f"✅ **Квитанція успішно перевірена Мій Господин!**\n\n"
+        f"✅ **Квитанція успішно пройшла валідацію Мій Господин!**\n\n"
         f"🔢 **Код документа:** `{receipt_code}`\n"
         f"💵 **Сума:** {amount_str} грн\n"
         f"🏢 **Отримувач:** {payee_str}\n"
         f"💳 **Картка / Рахунок:** `{card_str}`\n"
         f"📅 **Дата:** {date_str}\n"
-        f"🛡 **Статус:** Код валідний та готовий до перевірки\n\n"
+        f"🛡 **Статус:** Код валідний\n\n"
         f"Натисніть кнопку нижче, щоб відкрити офіційний документ у держреєстрі:",
         parse_mode="Markdown",
         reply_markup=keyboard
