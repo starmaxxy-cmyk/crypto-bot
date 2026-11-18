@@ -126,16 +126,13 @@ async def process_receipt_data(message: types.Message, full_text: str):
     if alt_p:
       payee_str = alt_p.group(1).strip()
 
-  # 4. Виправлене витягування Суми (щоб не чіпляти дрібні комісії типу 0.00 і брати повне число)
+  # 4. Виправлене витягування Суми
   amount_str = "Не вказано"
-  # Шукаємо суму літерами або ціле число з деталей транзакції
   det_section = re.search(r"Деталі транзакції(.*?)(?:Операційний|$)", full_text, re.DOTALL | re.IGNORECASE)
   search_scope = det_section.group(1) if det_section else full_text
 
-  # Шукаємо великі суми (наприклад, 20000.00 або суми з пробілами)
   amount_matches = re.findall(r"(?:Сума\s*(?:\(грн\))?[:\s]*)?(\d{1,3}(?:\s?\d{3})*[\.,]\d{2})", search_scope, re.IGNORECASE)
   if amount_matches:
-    # Беремо найбільшу знайдену суму у блоці деталей (щоб відкинути копійки/комісії на кшталт 0.00)
     cleaned_amounts = [float(amt.replace(" ", "").replace(",", ".")) for amt in amount_matches if float(amt.replace(" ", "").replace(",", ".")) > 1.0]
     if cleaned_amounts:
       max_amt = max(cleaned_amounts)
@@ -169,14 +166,30 @@ async def process_receipt_data(message: types.Message, full_text: str):
       [InlineKeyboardButton(text=f"📥 Відкрити в {service_name}", url=service_url)]
   ])
 
-  # Фінальний формат повідомлення
-  await message.answer(
+  # Збираємо текст у змінну без ризику помилок синтаксису
+  response_text = (
       f"✅ **Номер квитанції:** `{receipt_code}`\n\n"
       f"👤 **Відправник:** {sender_str}\n"
       f"🏢 **Отримувач / Картка:** {payee_str}\n"
       f"💵 **Сума:** {amount_str} грн\n"
       f"📅 **Дата:** {date_str}\n"
       f"📝 **Призначення:** {purpose_str}\n\n"
-      f"Натисніть кнопку нижче для переходу до офіційного джерела:",
-      parse_mode="Markdown",
-      reply_markup
+      f"Натисніть кнопку нижче для переходу до офіційного джерела:"
+  )
+
+  await message.answer(response_text, parse_mode="Markdown", reply_markup=keyboard)
+
+
+async def main():
+  await asyncio.sleep(5)
+  try:
+    await bot.delete_webhook(drop_pending_updates=True)
+  except Exception:
+    pass
+    
+  logging.info("Бот успішно запущено!")
+  await dp.start_polling(bot, handle_signals=False, close_bot_session=True)
+
+
+if __name__ == "__main__":
+  asyncio.run(main())
