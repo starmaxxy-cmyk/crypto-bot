@@ -87,24 +87,29 @@ async def handle_photo(message: types.Message):
 
 
 async def process_receipt_data(message: types.Message, full_text: str):
+  # Логуємо текст у консоль Render, щоб бачити, що читає Приват
+  logging.info(f"РОЗПІЗНАНИЙ ТЕКСТ:\n{full_text}")
+
   clean_text_no_spaces = full_text.replace(" ", "").replace("\n", "")
 
-  # 1. Номер квитанції
-  code_match = re.search(r"(P24[A-Z0-9]{10,25}D[A-Z0-9]{1,6}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text_no_spaces, re.IGNORECASE)
+  # 1. Пошук номера квитанції (Monobank + PrivatBank коди типу P24... або стандартні шматочки)
+  code_match = re.search(r"(P24[A-Z0-9]{10,30}D[A-Z0-9]{1,10}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text_no_spaces, re.IGNORECASE)
   if not code_match:
-    doc_code_search = re.search(r"(?:квитанція|коддокумента|код)[:\-]?\s*([A-Z0-9P24\-]{10,30})", full_text, re.IGNORECASE)
-    receipt_code = doc_code_search.group(1).strip() if doc_code_search else "Не знайдено"
+    # Шукаємо спеціально для ПриватБанку поблизу слів "Код документа"
+    privat_code_search = re.search(r"(?:Код документа|Коддок\.|Призначення)[:\-]?\s*([A-Z0-9P24\-]{10,35})", full_text, re.IGNORECASE)
+    if privat_code_search:
+      receipt_code = privat_code_search.group(1).strip()
+    else:
+      doc_code_search = re.search(r"(?:квитанція|код)[:\-]?\s*([A-Z0-9P24\-]{10,30})", full_text, re.IGNORECASE)
+      receipt_code = doc_code_search.group(1).strip() if doc_code_search else "Не знайдено"
   else:
     receipt_code = code_match.group(0).strip()
 
   receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
 
-  # 2. Сума
+  # 2. Витягування Суми (універсально для обох банків)
   amount_str = "Не вказано"
-  det_section = re.search(r"Деталі транзакції(.*?)(?:Операційний|$)", full_text, re.DOTALL | re.IGNORECASE)
-  search_scope = det_section.group(1) if det_section else full_text
-
-  amount_matches = re.findall(r"(?:Сума\s*(?:\(грн\))?[:\s]*)?(\d{1,3}(?:\s?\d{3})*[\.,]\d{2})", search_scope, re.IGNORECASE)
+  amount_matches = re.findall(r"(?:Сума\s*(?:\(грн\))?[:\s]*)?(\d{1,3}(?:\s?\d{3})*[\.,]\d{2})", full_text, re.IGNORECASE)
   if amount_matches:
     cleaned_amounts = [float(amt.replace(" ", "").replace(",", ".")) for amt in amount_matches if float(amt.replace(" ", "").replace(",", ".")) > 1.0]
     if cleaned_amounts:
@@ -113,16 +118,14 @@ async def process_receipt_data(message: types.Message, full_text: str):
     else:
       amount_str = amount_matches[0].replace(" ", "")
 
-  # 3. Дата та час операції
+  # 3. Дата та час операції (з урахуванням форматів Привату та Моно)
   date_str = "Не вказано"
-  date_match = re.search(r"(?:Дата і час операції|Дата)[:\s]*(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text, re.IGNORECASE)
-  if not date_match:
-    date_match = re.search(r"(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text)
+  date_match = re.search(r"(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text)
   if date_match:
     date_str = date_match.group(1).strip()
 
-  # Формуємо посилання
-  if receipt_code.startswith("P24"):
+  # Формуємо посилання (якщо починається з P24 — кидаємо на Приват, інакше на check.gov.ua)
+  if receipt_code.startswith("P24") or "P24" in full_text.upper():
     service_url = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
     service_name = "ПриватБанку"
   else:
@@ -133,7 +136,7 @@ async def process_receipt_data(message: types.Message, full_text: str):
       [InlineKeyboardButton(text=f"📥 Відкрити в {service_name}", url=service_url)]
   ])
 
-  # Тільки номер, сума, дата та ваш текст
+  # Фінальний текст повідомлення
   response_text = (
       f"✅ **Номер квитанції:** `{receipt_code}`\n\n"
       f"💵 **Сума:** {amount_str} грн\n"
