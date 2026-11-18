@@ -3,9 +3,10 @@ import logging
 import os
 import re
 import pdfplumber
-from PIL import Image
+import requests
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
+from aiogram.types import FSInputFile
 
 TOKEN = "9033168856:AAGAP6KKPAI7Sb5Tswxmdv4dBBuNFMqISzA"
 
@@ -17,20 +18,19 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
   await message.answer(
-      "Привіт! 👋 Надішли мені квитанцію (PDF-файлом або скріншотом/фото), "
-      "і я знайду її код."
+      "Привіт! 👋 Надішли мені квитанцію **як файл (PDF)** з Монобанку чи Привату, "
+      "і я перевірю її справжність у державних базах."
   )
 
 
-# Обробка PDF-файлів (працює ідеально зі 100% точністю)
 @dp.message(F.document)
 async def handle_document(message: types.Message):
   file_name = message.document.file_name.lower()
   if not file_name.endswith(".pdf"):
-    await message.answer("⚠️ Будь ласка, надішли квитанцію у форматі **PDF** або фото.")
+    await message.answer("⚠️ Будь ласка, надішли квитанцію у форматі **PDF**.")
     return
 
-  await message.answer("⏳ Зчитую PDF-квитанцію...")
+  await message.answer("⏳ Зчитую квитанцію та шукаю код...")
 
   file_info = await bot.get_file(message.document.file_id)
   downloaded_file = await bot.download_file(file_info.file_path)
@@ -50,53 +50,71 @@ async def handle_document(message: types.Message):
   if os.path.exists(temp_filename):
     os.remove(temp_filename)
 
-  process_extracted_code(message, extracted_text)
-
-
-# Обробка Фото / Скріншотів
-@dp.message(F.photo)
-async def handle_photo(message: types.Message):
-  await message.answer("⏳ Аналізую скріншот квитанції...")
-
-  # Завантажуємо фото
-  file_id = message.photo[-1].file_id
-  file_info = await bot.get_file(file_id)
-  downloaded_file = await bot.download_file(file_info.file_path)
-
-  temp_filename = "temp_photo.jpg"
-  with open(temp_filename, "wb") as f:
-    f.write(downloaded_file.read())
-
-  # Оскільки на скріншотах текст є графічним зображенням, 
-  # для простих серверів без важкого Tesseract ми зробимо базовий пошук 
-  # або повідомимо користувача. Але щоб він не видаляв помилку, 
-  # давай підкажемо найзручніший штрих:
-  
-  if os.path.exists(temp_filename):
-    os.remove(temp_filename)
-
-  # Якщо це скріншот з Монобанку, часто зручніше брати PDF, 
-  # але дамо користувачу знати результат:
-  await message.answer(
-      "💡 Щоб бот точно знаходив код із картинок у реальному часі без затримок, "
-      "найкраще надсилати квитанцію **як файл (PDF)**.\n\n"
-      "Але я вже готую наступний крок — підключення сайту перевірки банківських квитанцій!"
-  )
-
-
-def process_extracted_code(message, text):
-  # Шукаємо 16-значний код (наприклад, 9M4E-AC4M-M1CA-K097)
-  code_match = re.search(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}", text)
+  # Шукаємо 16-значний код квитанції
+  code_match = re.search(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}", extracted_text)
 
   if code_match:
     receipt_code = code_match.group(0)
-    # Зберігаємо або виводимо знайдений код
-    message.answer(
-        f"✅ **Код успішно знайдено!**\n\nКод: `{receipt_code}`",
+    await message.answer(
+        f"🔍 Знайдено код квитанції: `{receipt_code}`\n"
+        f"🌐 Перевіряю через державний реєстр check.gov.ua...",
         parse_mode="Markdown"
     )
+
+    # Робимо перевірку через публічний API check.gov.ua (або форму перевірки)
+    try:
+      # Запит до сервісу check.gov.ua (база для Моно, А-Банку та інших)
+      check_url = f"https://check.gov.ua/api/receipts/{receipt_code}"
+      response = requests.get(check_url, timeout=10)
+
+      if response.status_code == 200:
+        data = response.json()
+        if data and "id" in data:
+          sum_uah = data.get("amount", "Не вказано")
+          payer = data.get("payerName", "Не вказано")
+          
+          await message.answer(
+              f"✅ **Квитанція успішно знайдена та дійсна!**\n\n"
+              f"💵 **Сума:** {sum_uah} грн\n"
+              f"👤 **Відправник:** {payer}\n"
+              f"🔢 **Код:** `{receipt_code}`",
+              parse_mode="Markdown"
+          )
+        else:
+          await message.answer(
+              f"❌ **Квитанцію з кодом `{receipt_code}` не знайдено в базі.**\n"
+              f"Можливо, платіж ще не дійшов або квитанція недійсна.",
+              parse_mode="Markdown"
+          )
+      else:
+        # Якщо прямий API відповів інакше, даємо базову лінку для ручної перевірки
+        await message.answer(
+            f"✅ Код витягнуто: `{receipt_code}`\n\n"
+            f"🔗 Можеш перевірити вручну на офіційних сайтах:\n"
+            f"• [Check.gov.ua](https://check.gov.ua/)\n"
+            f"• [ПриватБанк Перевірка](https://privatbank.ua/check)",
+            parse_mode="Markdown"
+        )
+    except Exception as api_err:
+      logging.error(f"Помилка запиту до API: {api_err}")
+      await message.answer(
+          f"✅ Код успішно знайдено: `{receipt_code}`\n\n"
+          f"🔗 Перевір квитанцію за посиланням: https://check.gov.ua/",
+          parse_mode="Markdown"
+      )
+
   else:
-    message.answer("⚠️ Не вдалося знайти код квитанції. Перевір, чи чек повний.")
+    await message.answer(
+        "⚠️ Не вдалося знайти код квитанції у цьому файлі. "
+        "Переконайся, що це оригінальний PDF-файл квитанції з банку."
+    )
+
+
+@dp.message(F.photo)
+async def handle_photo(message: types.Message):
+  await message.answer(
+      "💡 Для найшвидшої та найточнішої перевірки надсилай квитанцію **як файл (PDF)**."
+  )
 
 
 async def main():
