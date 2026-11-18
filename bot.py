@@ -21,22 +21,23 @@ async def cmd_start(message: types.Message):
   await message.answer("Надішли мені квитанцію Мій Господин")
 
 
-def preprocess_image(image_path: str) -> str:
+def extract_full_text(image_path: str) -> str:
+  """Якісне зчитування українського та англійського тексту без жорстких обмежень"""
   try:
     img = Image.open(image_path)
-    img = img.resize((img.width * 4, img.height * 4), Image.Resampling.LANCZOS)
+    img = img.resize((img.width * 3, img.height * 3), Image.Resampling.LANCZOS)
     img = img.convert('L')
     img = ImageOps.autocontrast(img, cutoff=2)
     
     enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(3.0)
-    
-    processed_path = "processed_temp.jpg"
-    img.save(processed_path)
-    return processed_path
+    img = enhancer.enhance(2.5)
+
+    # Використовуємо стандартне двомовне розпізнавання (укр + англ)
+    text = pytesseract.image_to_string(img, lang='eng+ukr')
+    return text
   except Exception as e:
-    logging.error(f"Помилка препроцесингу: {e}")
-    return image_path
+    logging.error(f"Помилка OCR: {e}")
+    return ""
 
 
 @dp.message(F.document)
@@ -66,7 +67,7 @@ async def handle_document(message: types.Message):
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-  await message.answer("⏳ Сканую та витягую реквізити квитанції Мій Господин...")
+  await message.answer("⏳ Зчитую реквізити квитанції Мій Господин...")
   try:
     file_id = message.photo[-1].file_id
     file_info = await bot.get_file(file_id)
@@ -76,13 +77,10 @@ async def handle_photo(message: types.Message):
     with open(temp_filename, "wb") as f:
       f.write(downloaded_file.read())
 
-    processed_image_path = preprocess_image(temp_filename)
-    # Зчитуємо текст з підтримкою української мови для точного захоплення імен та реквізитів
-    full_text = pytesseract.image_to_string(Image.open(processed_image_path), lang='eng+ukr')
+    full_text = extract_full_text(temp_filename)
 
-    for p in [temp_filename, processed_image_path]:
-      if os.path.exists(p):
-        os.remove(p)
+    if os.path.exists(temp_filename):
+      os.remove(temp_filename)
 
     await process_receipt_data(message, full_text)
   except Exception as e:
@@ -91,10 +89,13 @@ async def handle_photo(message: types.Message):
 
 
 async def process_receipt_data(message: types.Message, full_text: str):
-  clean_text = full_text.replace(" ", "").replace("\n", "")
+  # Логуємо для перевірки в консолі Render, що саме розпізнав бот
+  logging.info(f"РОЗПІЗНАНИЙ ТЕКСТ:\n{full_text}")
 
-  # 1. Пошук номера квитанції (формат A576-M9T4-4PX4-XAXH або подібні, а також P24...)
-  code_match = re.search(r"(P24[A-Z0-9]{10,25}D[A-Z0-9]{1,6}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text, re.IGNORECASE)
+  clean_text_no_spaces = full_text.replace(" ", "").replace("\n", "")
+
+  # 1. Пошук номера квитанції (формат A576-M9T4-4PX4-XAXH, P24... або подібні)
+  code_match = re.search(r"(P24[A-Z0-9]{10,25}D[A-Z0-9]{1,6}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text_no_spaces, re.IGNORECASE)
 
   if not code_match:
     doc_code_search = re.search(r"(?:квитанція|коддокумента|код)[:\-]?\s*([A-Z0-9P24\-]{10,30})", full_text, re.IGNORECASE)
@@ -111,24 +112,31 @@ async def process_receipt_data(message: types.Message, full_text: str):
 
   receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
 
-  # 2. Витягування Відправника
-  sender_match = re.search(r"Відправник[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s\.]{5,40})", full_text)
+  # 2. Витягування Відправника (шукаємо рядок після слова Відправник)
+  sender_match = re.search(r"Відправник[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s\.]{5,50})", full_text)
   sender_str = sender_match.group(1).strip() if sender_match else "Не вказано"
 
   # 3. Витягування Одержувача / Картки
-  payee_match = re.search(r"(?:Одержувач|Отримувач)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z0-9\s\.,\*\-_]{5,50})", full_text)
+  payee_match = re.search(r"(?:Одержувач|Отримувач)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z0-9\s\.,\*\-_]{5,60})", full_text)
   payee_str = payee_match.group(1).strip() if payee_match else "Не вказано"
 
-  # 4. Витягування Суми (підтримує грн, UAH, символ ₴)
-  amount_match = re.search(r"Сума[:\s]*(\d+[\.,]?\d*)\s*(?:UAH|грн|₴)?", full_text, re.IGNORECASE)
-  amount_str = amount_match.group(1) if amount_match else "Не вказано"
+  # 4. Витягування Суми (підтримує числа з крапкою/комою та символи грн, UAH, ₴)
+  amount_match = re.search(r"Сума[:\s]*([\d\s\.,]+)\s*(?:UAH|грн|₴)?", full_text, re.IGNORECASE)
+  if amount_match:
+    amount_str = amount_match.group(1).replace(" ", "").strip()
+  else:
+    # Запасний пошук будь-якого числа з копійками
+    alt_amount = re.search(r"(\d+[\.,]\d{2})\s*(?:₴|грн|UAH)?", full_text, re.IGNORECASE)
+    amount_str = alt_amount.group(1) if alt_amount else "Не вказано"
 
   # 5. Витягування Дати та часу
-  date_match = re.search(r"Дата[:\s]*(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text)
-  date_str = date_match.group(1) if date_match else "Не вказано"
+  date_match = re.search(r"(?:Дата|Операція)[:\s]*(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text)
+  if not date_match:
+    date_match = re.search(r"(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text)
+  date_str = date_match.group(1).strip() if date_match else "Не вказано"
 
   # 6. Витягування Призначення платежу
-  purpose_match = re.search(r"Призначення[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z0-9\s\.,\-]{3,50})", full_text)
+  purpose_match = re.search(r"Призначення[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z0-9\s\.,\-]{3,60})", full_text)
   purpose_str = purpose_match.group(1).strip() if purpose_match else "Переказ коштів"
 
   # Формуємо посилання для перевірки
