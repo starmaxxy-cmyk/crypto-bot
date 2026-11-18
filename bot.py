@@ -9,8 +9,14 @@ import pytesseract
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiohttp import web
 
 TOKEN = "9100600793:AAEIyt2CLU7KBEQap0nhfBWvtVKK7tv2Dms"
+
+# Налаштування для вебхуків на Render (Render автоматично дає порт)
+PORT = int(os.environ.get("PORT", 10000))
+# URL твого сервісу на Render (заміни на своє реальне посилання з render.com)
+WEBHOOK_URL = f"https://crypto-bot-xxxx.onrender.com/webhook"  # або бот сам підхопить, якщо налаштуємо нижче
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -25,7 +31,6 @@ async def cmd_start(message: types.Message):
 def extract_text_from_photo(image_path: str) -> str:
   try:
     img = Image.open(image_path)
-    # Збільшуємо у 3 рази для максимальної деталізації
     img = img.resize((img.width * 3, img.height * 3), Image.Resampling.LANCZOS)
     img = img.convert('L')
     img = ImageOps.autocontrast(img, cutoff=5)
@@ -33,7 +38,6 @@ def extract_text_from_photo(image_path: str) -> str:
     enhancer = ImageEnhance.Contrast(img)
     img = enhancer.enhance(2.0)
 
-    # Максимально чіткий конфіг для зчитування цифр і літер
     custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.,'
     text = pytesseract.image_to_string(img, lang='eng+ukr', config=custom_config)
     return text
@@ -43,10 +47,8 @@ def extract_text_from_photo(image_path: str) -> str:
 
 
 async def process_and_reply(message: types.Message, extracted_text: str):
-  # Очищаємо текст для пошуку коду
   clean_text = extracted_text.replace(" ", "").replace("\n", "")
 
-  # Шукаємо код ПриватБанку (P24...) або стандартний код квитанції
   code_match = re.search(r"(P24[A-Z0-9]{15,20}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text, re.IGNORECASE)
 
   if not code_match:
@@ -61,11 +63,8 @@ async def process_and_reply(message: types.Message, extracted_text: str):
   if receipt_code:
     receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
 
-    # --- ЛОГІКА ДЛЯ ПРИВАТБАНКУ (P24...) ---
     if receipt_code.startswith("P24"):
       privat_url = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
-      
-      # Пробуємо витягнути суму з тексту для додаткового підтвердження
       amount_match = re.search(r"(\d+[\.,]\d{2})\s*(?:UAH|грн)", extracted_text, re.IGNORECASE)
       amount_str = amount_match.group(1) if amount_match else "Не вказано"
 
@@ -82,8 +81,6 @@ async def process_and_reply(message: types.Message, extracted_text: str):
           parse_mode="Markdown",
           reply_markup=keyboard
       )
-
-    # --- ЛОГІКА ДЛЯ MONO, А-БАНКУ ТА ІНШИХ (через check.gov.ua) ---
     else:
       await message.answer(
           f"🔍 Знайдено код: `{receipt_code}`\n"
@@ -124,25 +121,15 @@ async def process_and_reply(message: types.Message, extracted_text: str):
             ])
             await message.answer(
                 f"❌ **Увага! Документ не знайдено в державній базі Мій Господин.**\n"
-                f"Код витягнуто: `{receipt_code}`. Можливо, квитанція не зареєстрована або була підроблена.",
+                f"Код витягнуто: `{receipt_code}`.",
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
         else:
-          keyboard = InlineKeyboardMarkup(inline_keyboard=[
-              [InlineKeyboardButton(text="📥 Відкрити посилання", url=f"https://check.gov.ua/{receipt_code}")]
-          ])
-          await message.answer(
-              f"⚠️ **Сервер перевірки недоступний, але код знайдено:** `{receipt_code}`",
-              parse_mode="Markdown",
-              reply_markup=keyboard
-          )
+          await message.answer(f"⚠️ Сервер перевірки недоступний, але код знайдено: `{receipt_code}`", parse_mode="Markdown")
       except Exception as e:
         logging.error(f"Помилка API: {e}")
-        await message.answer(
-            f"✅ Код знайдено: `{receipt_code}`, проте сталася помилка з'єднання з базою.",
-            parse_mode="Markdown"
-        )
+        await message.answer(f"✅ Код знайдено: `{receipt_code}`", parse_mode="Markdown")
   else:
     await message.answer("❌ Не вдалося розпізнати код квитанції Мій Господин. Надішли чіткіший скріншот або файл PDF.")
 
@@ -191,7 +178,42 @@ async def handle_photo(message: types.Message):
 
 
 async def main():
-  await dp.start_polling(bot)
+  # Налаштування вебхука для Render
+  # Render дає публічне посилання на твій сервіс (наприклад, https:// твого_сервісу .onrender.com)
+  # Увімкнемо автоматичну реєстрацію через змінну середовища або прямий URL
+  app = web.Application()
+  
+  # Проста штурмова перевірка для Render healthcheck
+  async def handle_ping(request):
+    return web.Response(text="Bot is running!")
+
+  app.router.add_get("/", handle_ping)
+
+  # Налаштування обробника апдейтів від Telegram
+  from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+  
+  webhook_requests_handler = SimpleRequestHandler(
+      dispatcher=dp,
+      bot=bot,
+  )
+  webhook_requests_handler.register(app, path="/webhook")
+  setup_application(app, dp, bot=bot)
+
+  # Отримуємо зовнішній URL з Render (або задаємо вручну)
+  # Render автоматично надає RENDER_EXTERNAL_URL у змінних середовища
+  render_url = os.environ.get("RENDER_EXTERNAL_URL")
+  if render_url:
+    webhook_url = f"{render_url}/webhook"
+    await bot.set_webhook(webhook_url)
+    logging.info(f"Webhook встановлено на: {webhook_url}")
+
+  runner = web.AppRunner(app)
+  await runner.setup()
+  site = web.TCPSite(runner, "0.0.0.0", PORT)
+  await site.start()
+  
+  logging.info(f"Сервер запущено на порту {PORT}")
+  await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
