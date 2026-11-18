@@ -15,7 +15,6 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Сховище для пакетів заявок
 order_batches = {}
 
 @dp.message(Command("start"))
@@ -82,17 +81,14 @@ async def handle_receipt(message: types.Message):
     code_match = re.search(r'(?:[A-Za-z0-9]{15,45}|[A-Z0-9-]{15,})', extracted_text)
     receipt_code = code_match.group(0) if code_match else "Не знайдено"
 
-    # 2. Покращений парсинг суми (шукаємо чітко біля слів Сума/грн або великі числа з копійками)
+    # 2. Шукаємо суму
     amount = "Не вказано"
-    # Шукаємо шаблони типу "Сума: 1234.56" або схожі
     amount_match = re.search(r'(?:Сума|Сумма|Total|Amount|платпежу|оплати)[\s:]*([0-9\s]+[\.,]\d{2})', extracted_text, re.IGNORECASE)
     if amount_match:
         amount = amount_match.group(1).replace(' ', '').replace(',', '.')
     else:
-        # Шукаємо всі грошові суми у тексті і беремо найбільш релевантну (не занадто малу комісійну)
         amounts = re.findall(r'\b([1-9]\d{1,5}[\.,]\d{2})\b', extracted_text)
         if amounts:
-            # Беремо максимальну або останню знайдену суму (зазвичай загальна сума платіжки найбільша)
             amount = amounts[-1].replace(' ', '').replace(',', '.')
 
     # Посилання для перевірки
@@ -103,10 +99,14 @@ async def handle_receipt(message: types.Message):
         check_url = f"https://check.gov.ua/{receipt_code}"
         bank_name = "check.gov.ua"
 
+    # ВИВОДИМО ТАКОЖ РОЗПІЗНАНИЙ ТЕКСТ ДЛЯ АНАЛІЗУ (додано для дебагу)
+    debug_snippet = extracted_text.replace('\n', ' ')[:150]
+
     response_text = (
         f"✅ Номер квитанції: `{receipt_code}`\n\n"
         f"💵 Сума: {amount} грн\n"
         f"📅 Дата: Не вказано\n\n"
+        f"🔍 *Розпізнано з тексту:* `{debug_snippet}...`\n\n"
         f"⚠️ Квитанція не перевірена, будь ласка, перевірте її самі, бо я тупий!!!\n\n"
         f"Натисніть кнопку нижче для переходу до офіційного джерела:"
     )
