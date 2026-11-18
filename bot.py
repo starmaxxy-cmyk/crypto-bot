@@ -99,7 +99,7 @@ async def process_receipt_data(message: types.Message, full_text: str):
 
   receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
 
-  # 2. Витягування Суми
+  # 2. Сума
   amount_str = "Не вказано"
   det_section = re.search(r"Деталі транзакції(.*?)(?:Операційний|$)", full_text, re.DOTALL | re.IGNORECASE)
   search_scope = det_section.group(1) if det_section else full_text
@@ -121,12 +121,6 @@ async def process_receipt_data(message: types.Message, full_text: str):
   if date_match:
     date_str = date_match.group(1).strip()
 
-  # 4. Призначення платежу
-  purpose_str = "Переказ коштів"
-  purpose_match = re.search(r"Призначення платежу[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z0-9\s\.,\-]{3,60})", full_text, re.IGNORECASE)
-  if purpose_match:
-    purpose_str = purpose_match.group(1).strip()
-
   # Формуємо посилання
   if receipt_code.startswith("P24"):
     service_url = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
@@ -136,4 +130,31 @@ async def process_receipt_data(message: types.Message, full_text: str):
     service_name = "державному реєстрі check.gov.ua"
 
   keyboard = InlineKeyboardMarkup(inline_keyboard=[
-      [InlineKeyboardButton
+      [InlineKeyboardButton(text=f"📥 Відкрити в {service_name}", url=service_url)]
+  ])
+
+  # Тільки номер, сума, дата та ваш текст
+  response_text = (
+      f"✅ **Номер квитанції:** `{receipt_code}`\n\n"
+      f"💵 **Сума:** {amount_str} грн\n"
+      f"📅 **Дата:** {date_str}\n\n"
+      f"⚠️ **Квитанція не перевірена, будь ласка, перевірте її самі, бо я тупий!!!**\n\n"
+      f"Натисніть кнопку нижче для переходу до офіційного джерела:"
+  )
+
+  await message.answer(response_text, parse_mode="Markdown", reply_markup=keyboard)
+
+
+async def main():
+  await asyncio.sleep(5)
+  try:
+    await bot.delete_webhook(drop_pending_updates=True)
+  except Exception:
+    pass
+    
+  logging.info("Бот успішно запущено!")
+  await dp.start_polling(bot, handle_signals=False, close_bot_session=True)
+
+
+if __name__ == "__main__":
+  asyncio.run(main())
