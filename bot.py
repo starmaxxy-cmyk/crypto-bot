@@ -4,6 +4,8 @@ import os
 import re
 import pdfplumber
 import requests
+from PIL import Image
+import pytesseract
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -20,10 +22,10 @@ async def cmd_start(message: types.Message):
   await message.answer("Надішли мені квитанцію Мій Господин")
 
 
-# Основна логіка перевірки та виведення посилання на файл квитанції
-async def verify_and_send_result(message: types.Message, text: str):
-  # Шукаємо 16-значний код квитанції
-  code_match = re.search(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}", text)
+# Універсальна перевірка та надсилання посилання на файл квитанції
+async def process_text_and_reply(message: types.Message, extracted_text: str):
+  # Шукаємо 16-значний код квитанції (наприклад, T20K-357H-T17C-H7PH)
+  code_match = re.search(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}", extracted_text)
 
   if code_match:
     receipt_code = code_match.group(0)
@@ -45,16 +47,15 @@ async def verify_and_send_result(message: types.Message, text: str):
           payee = data.get("payeeName", "Не вказано")
           payment_date = data.get("paymentDate", "Не вказано")
           
-          # Офіційні посилання на перевірку та скачування файлу в системі check.gov.ua
+          # Офіційне посилання на скачування самого PDF-файлу квитанції
           pdf_download_url = f"https://check.gov.ua/receipts/{receipt_code}"
           
-          # Створюємо зручну кнопку для скачування самого файлу квитанції
           keyboard = InlineKeyboardMarkup(inline_keyboard=[
               [InlineKeyboardButton(text="📥 Завантажити файл квитанції (PDF)", url=pdf_download_url)]
           ])
 
           await message.answer(
-              f"✅ **Квитанція успішно перевірена та дійсна!**\n\n"
+              f"✅ **Квитанція успішно перевірена та дійсна Мій Господин!**\n\n"
               f"💵 **Сума:** {sum_uah} грн\n"
               f"👤 **Відправник:** {payer}\n"
               f"🏢 **Отримувач:** {payee}\n"
@@ -65,7 +66,7 @@ async def verify_and_send_result(message: types.Message, text: str):
           )
         else:
           await message.answer(
-              f"❌ **Увага Мій Господин!** Квитанцію з кодом `{receipt_code}` не знайдено в державній базі.",
+              f"❌ Квитанцію з кодом `{receipt_code}` не знайдено в державній базі, Мій Господин.",
               parse_mode="Markdown"
           )
       else:
@@ -106,13 +107,33 @@ async def handle_document(message: types.Message):
   if os.path.exists(temp_filename):
     os.remove(temp_filename)
 
-  await verify_and_send_result(message, extracted_text)
+  await process_text_and_reply(message, extracted_text)
 
 
-# Обробка звичайних фото (якщо текст вдається витягнути або як підказка)
+# Обробка скріншотів та фото з галереї
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-  await message.answer("Надішли мені квитанцію Мій Господин")
+  await message.answer("⏳ Зчитую дані зі скріншота Мій Господин...")
+  
+  file_id = message.photo[-1].file_id
+  file_info = await bot.get_file(file_id)
+  downloaded_file = await bot.download_file(file_info.file_path)
+  
+  temp_filename = "temp_photo.jpg"
+  with open(temp_filename, "wb") as f:
+    f.write(downloaded_file.read())
+
+  extracted_text = ""
+  try:
+    # Пробуємо зчитати текст з картинки
+    extracted_text = pytesseract.image_to_string(Image.open(temp_filename), lang='ukr+eng')
+  except Exception as e:
+    logging.error(f"Помилка OCR з фото: {e}")
+
+  if os.path.exists(temp_filename):
+    os.remove(temp_filename)
+
+  await process_text_and_reply(message, extracted_text)
 
 
 async def main():
