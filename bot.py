@@ -8,6 +8,7 @@ import pytesseract
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import requests
 
 TOKEN = os.environ.get("BOT_TOKEN")
 
@@ -31,7 +32,6 @@ def extract_text_from_photo(image_path: str) -> str:
     enhancer = ImageEnhance.Contrast(img)
     img = enhancer.enhance(2.0)
 
-    # Зчитуємо текст разом із кирилицею та латиницею для повного аналізу квитанції
     text = pytesseract.image_to_string(img, lang='eng+ukr')
     return text
   except Exception as e:
@@ -58,7 +58,7 @@ async def handle_document(message: types.Message):
     if os.path.exists(temp_filename):
       os.remove(temp_filename)
 
-    await process_and_reply(message, extracted_text)
+    await process_and_verify(message, extracted_text)
   except Exception as e:
     logging.error(f"Помилка PDF: {e}")
     await message.answer("❌ Сталася помилка при читанні PDF документу.")
@@ -66,7 +66,7 @@ async def handle_document(message: types.Message):
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-  await message.answer("⏳ Аналізую квитанцію Мій Господин...")
+  await message.answer("⏳ Сканую та роблю запит до держреєстру Мій Господин...")
   try:
     file_id = message.photo[-1].file_id
     file_info = await bot.get_file(file_id)
@@ -81,13 +81,13 @@ async def handle_photo(message: types.Message):
     if os.path.exists(temp_filename):
       os.remove(temp_filename)
 
-    await process_and_reply(message, extracted_text)
+    await process_and_verify(message, extracted_text)
   except Exception as e:
     logging.error(f"Помилка фото: {e}")
     await message.answer("❌ Сталася помилка при скануванні зображення.")
 
 
-async def process_and_reply(message: types.Message, extracted_text: str):
+async def process_and_verify(message: types.Message, extracted_text: str):
   clean_text = extracted_text.replace(" ", "").replace("\n", "")
 
   # Шукаємо код ПриватБанку або стандартний код квитанції
@@ -102,48 +102,97 @@ async def process_and_reply(message: types.Message, extracted_text: str):
   else:
     receipt_code = code_match.group(0).strip()
 
-  if receipt_code:
-    receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
+  if not receipt_code:
+    await message.answer("❌ Не вдалося знайти жодного коду квитанції на цьому зображенні Мій Господин.")
+    return
 
-    # Самостійно витягуємо ключові дані з тексту квитанції для звіту
-    amount_match = re.search(r"(\d+[\.,]\d{2})\s*(?:UAH|грн)", extracted_text, re.IGNORECASE)
-    amount_str = amount_match.group(1) if amount_match else "Не вказано"
+  receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
+  await message.answer(f"🔍 Знайдено код: `{receipt_code}`. Роблю запит на перевірку...", parse_mode="Markdown")
 
-    date_match = re.search(r"(\d{2}\.\d{2}\.\d{4}\s*\d{2}:\d{2})", extracted_text)
-    date_str = date_match.group(1) if date_match else "Не вказано"
+  # 1. СПЕЦІАЛЬНА ПЕРЕВІРКА ДЛЯ ПРИВАТБАНКУ (P24...)
+  if receipt_code.startswith("P24"):
+    privat_api_url = f"https://www.privatbank.ua/api/check-receipt?paymentNumber={receipt_code}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+      response = requests.get(privat_url, headers=headers, timeout=5)
+      # Якщо ПриватБанк повертає успішну відповідь або документ існує в їхній системі
+      if response.status_code == 200:
+        privat_url_page = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📥 Відкрити оригінал в ПриватБанку", url=privat_url_page)]
+        ])
+        await message.answer(
+            f"✅ **Квитанція успішно пройшла перевірку в банку Мій Господин!**\n\n"
+            f"🔢 **Код документа:** `{receipt_code}`\n"
+            f"🛡 **Статус:** Підтверджено офіційним сервером ПриватБанку.",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+      else:
+        await message.answer(
+            f"❌ **УВАГА! Підробка або недійсний документ!**\n\n"
+            f"Код `{receipt_code}` не пройшов верифікацію на сервері ПриватБанку.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+      # Запасний варіант, якщо сервер банку обмежив з'єднання
+      privat_url_page = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
+      keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Перевірити вручну", url=privat_url_page)]])
+      await message.answer(f"⚠️ Не вдалося отримати пряму відповідь від сервера ПриватБанку для коду `{receipt_code}`.", parse_mode="Markdown", reply_markup=keyboard)
+    return
 
-    if receipt_code.startswith("P24"):
-      privat_url = f"https://www.privatbank.ua/lu/check-receipt?paymentNumber={receipt_code}"
-      keyboard = InlineKeyboardMarkup(inline_keyboard=[
-          [InlineKeyboardButton(text="📥 Відкрити квитанцію ПриватБанку", url=privat_url)]
-      ])
-      await message.answer(
-          f"✅ **Звіт по квитанції ПриватБанку Мій Господин!**\n\n"
-          f"🔢 **Код документа:** `{receipt_code}`\n"
-          f"💵 **Сума:** {amount_str} грн\n"
-          f"📅 **Дата операції:** {date_str}\n"
-          f"🛡 **Статус:** Документ знайдено та верифіковано в системі\n\n"
-          f"Натисніть кнопку нижче для перегляду оригіналу:",
-          parse_mode="Markdown",
-          reply_markup=keyboard
-      )
+  # 2. ПЕРЕВІРКА ДЛЯ MONO, А-БАНКУ ТА ІНШИХ (через check.gov.ua)
+  api_url = f"https://check.gov.ua/api/receipts/{receipt_code}"
+  headers = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "Accept": "application/json"
+  }
+
+  try:
+    response = requests.get(api_url, headers=headers, timeout=7)
+    
+    if response.status_code == 200:
+      data = response.json()
+      # Перевіряємо, чи сервер повернув реальні дані квитанції (наявність ID або суми)
+      if data and (data.get("id") or data.get("amount") or data.get("status") == "SUCCESS"):
+        sum_uah = data.get("amount", "Не вказано")
+        payer = data.get("payerName", "Не вказано")
+        payee = data.get("payeeName", "Не вказано")
+        payment_date = data.get("paymentDate", "Не вказано")
+
+        check_url = f"https://check.gov.ua/{receipt_code}"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📥 Відкрити квитанцію в держреєстрі", url=check_url)]
+        ])
+
+        await message.answer(
+            f"✅ **Квитанція офіційно підтверджена держреєстром Мій Господин!**\n\n"
+            f"💵 **Сума:** {sum_uah} грн\n"
+            f"👤 **Відправник:** {payer}\n"
+            f"🏢 **Отримувач:** {payee}\n"
+            f"📅 **Дата:** {payment_date}\n"
+            f"🔢 **Код:** `{receipt_code}`\n"
+            f"🛡 **Статус:** 100% Оригінал (підтверджено сервером check.gov.ua)",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+      else:
+        # Код знайшли, але сервер каже, що документа з таким кодом не існує в базі (мальовка/фейк)
+        await message.answer(
+            f"❌ **УВАГА! Ця квитанція НЕ ЗНАЙДЕНА в державній базі!**\n\n"
+            f"Код `{receipt_code}`, витягнутий із зображення, є підробленим або не зареєстрований у системі check.gov.ua!",
+            parse_mode="Markdown"
+        )
     else:
-      check_url = f"https://check.gov.ua/{receipt_code}"
-      keyboard = InlineKeyboardMarkup(inline_keyboard=[
-          [InlineKeyboardButton(text="📥 Відкрити в державній базі", url=check_url)]
-      ])
+      # Якщо сервер повернув помилку (наприклад 404 - документ не знайдено)
       await message.answer(
-          f"✅ **Звіт по квитанції успішно сформовано Мій Господин!**\n\n"
-          f"🔢 **Код документа:** `{receipt_code}`\n"
-          f"💵 **Сума:** {amount_str} грн\n"
-          f"📅 **Дата операції:** {date_str}\n"
-          f"🛡 **Статус:** Квитанція дійсна та зареєстрована\n\n"
-          f"Натисніть кнопку нижче, щоб відкрити офіційний документ:",
-          parse_mode="Markdown",
-          reply_markup=keyboard
+          f"❌ **Фейкова або недійсна квитанція!**\n\n"
+          f"Державний сервер відхилив запит за кодом `{receipt_code}` (Документ відсутній у базі даних).",
+          parse_mode="Markdown"
       )
-  else:
-    await message.answer("❌ Не вдалося розпізнати код квитанції Мій Господин. Надішли чіткіший скріншот або файл PDF.")
+  except Exception as e:
+    logging.error(f"Помилка запиту до API: {e}")
+    await message.answer(f"⚠️ Помилка зв'язку з державним сервером перевірки. Код з картинки: `{receipt_code}`", parse_mode="Markdown")
 
 
 async def main():
