@@ -99,34 +99,7 @@ async def process_receipt_data(message: types.Message, full_text: str):
 
   receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
 
-  # 2. Відправник
-  sender_str = "Не вказано"
-  sender_section = re.search(r"Відправник(.*?)(?=Одержувач|Отримувач|$)", full_text, re.DOTALL | re.IGNORECASE)
-  if sender_section:
-    s_text = sender_section.group(1)
-    s_match = re.search(r"(?:Ім'?я|ПІБ)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s]{6,45})", s_text)
-    if s_match:
-      sender_str = s_match.group(1).strip()
-
-  # 3. Одержувач та картка
-  payee_str = "Не вказано"
-  payee_section = re.search(r"(?:Одержувач|Отримувач)(.*?)(?=Деталі|Сума|$)", full_text, re.DOTALL | re.IGNORECASE)
-  if payee_section:
-    p_text = payee_section.group(1)
-    p_name = re.search(r"(?:Ім'?я)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s\.]{2,30})", p_text)
-    p_card = re.search(r"(?:UA\d{2}\d{4,}\d*|\d{4}\s?\*{4}\s?\*{4}\s?\d{4})", p_text)
-    
-    n_val = p_name.group(1).strip() if p_name else ""
-    c_val = p_card.group(0).strip() if p_card else ""
-    if n_val or c_val:
-      payee_str = f"{n_val}, {c_val}".strip(", ")
-
-  if payee_str == "Не вказано":
-    alt_p = re.search(r"(?:Одержувач|Отримувач)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s,\*\-\d]{5,50})", full_text)
-    if alt_p:
-      payee_str = alt_p.group(1).strip()
-
-  # 4. Виправлене витягування Суми
+  # 2. Витягування Суми
   amount_str = "Не вказано"
   det_section = re.search(r"Деталі транзакції(.*?)(?:Операційний|$)", full_text, re.DOTALL | re.IGNORECASE)
   search_scope = det_section.group(1) if det_section else full_text
@@ -140,7 +113,7 @@ async def process_receipt_data(message: types.Message, full_text: str):
     else:
       amount_str = amount_matches[0].replace(" ", "")
 
-  # 5. Дата та час операції
+  # 3. Дата та час операції
   date_str = "Не вказано"
   date_match = re.search(r"(?:Дата і час операції|Дата)[:\s]*(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text, re.IGNORECASE)
   if not date_match:
@@ -148,7 +121,7 @@ async def process_receipt_data(message: types.Message, full_text: str):
   if date_match:
     date_str = date_match.group(1).strip()
 
-  # 6. Призначення платежу
+  # 4. Призначення платежу
   purpose_str = "Переказ коштів"
   purpose_match = re.search(r"Призначення платежу[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z0-9\s\.,\-]{3,60})", full_text, re.IGNORECASE)
   if purpose_match:
@@ -163,33 +136,4 @@ async def process_receipt_data(message: types.Message, full_text: str):
     service_name = "державному реєстрі check.gov.ua"
 
   keyboard = InlineKeyboardMarkup(inline_keyboard=[
-      [InlineKeyboardButton(text=f"📥 Відкрити в {service_name}", url=service_url)]
-  ])
-
-  # Збираємо текст у змінну без ризику помилок синтаксису
-  response_text = (
-      f"✅ **Номер квитанції:** `{receipt_code}`\n\n"
-      f"👤 **Відправник:** {sender_str}\n"
-      f"🏢 **Отримувач / Картка:** {payee_str}\n"
-      f"💵 **Сума:** {amount_str} грн\n"
-      f"📅 **Дата:** {date_str}\n"
-      f"📝 **Призначення:** {purpose_str}\n\n"
-      f"Натисніть кнопку нижче для переходу до офіційного джерела:"
-  )
-
-  await message.answer(response_text, parse_mode="Markdown", reply_markup=keyboard)
-
-
-async def main():
-  await asyncio.sleep(5)
-  try:
-    await bot.delete_webhook(drop_pending_updates=True)
-  except Exception:
-    pass
-    
-  logging.info("Бот успішно запущено!")
-  await dp.start_polling(bot, handle_signals=False, close_bot_session=True)
-
-
-if __name__ == "__main__":
-  asyncio.run(main())
+      [InlineKeyboardButton
