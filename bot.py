@@ -8,7 +8,7 @@ import easyocr
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 
-TOKEN = "9033168856:AAGAP6KKPAI7Sb5Tswxmdv4dBBuNFMqISzA"
+TOKEN = "9033168856:AAG78hzj9yZNMjaNohP20hhe7W9yUboslBc"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
