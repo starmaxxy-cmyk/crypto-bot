@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-TOKEN = "9100600793:AAEIyt2CLU7KBEQap0nhfBWvtVKK7tv2Dms"
+TOKEN = "9100600793:AAEiyt2CLU7KBEQap0nhfBwvtVKK7tv2Dms"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -25,30 +25,41 @@ async def cmd_start(message: types.Message):
 def extract_text_from_photo(image_path: str) -> str:
   try:
     img = Image.open(image_path)
-    img = img.resize((img.width * 2, img.height * 2), Image.Resampling.LANCZOS)
+    # Збільшуємо у 3 рази для максимальної деталізації дрібних цифр
+    img = img.resize((img.width * 3, img.height * 3), Image.Resampling.LANCZOS)
     img = img.convert('L')
-    img = ImageOps.autocontrast(img, cutoff=2)
-    custom_config = r'--oem 3 --psm 6'
-    text = pytesseract.image_to_string(img, lang='ukr+eng', config=custom_config)
+    img = ImageOps.autocontrast(img, cutoff=5)
+    
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(2.0)
+
+    # Фільтруємо символи для уникнення помилок OCR
+    custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
+    text = pytesseract.image_to_string(img, lang='eng', config=custom_config)
     return text
   except Exception as e:
-    logging.error(f"Помилка обробки фото: {e}")
+    logging.error(f"Помилка обробки складного фото: {e}")
     return ""
 
 
 async def process_and_reply(message: types.Message, extracted_text: str):
-  code_match = re.search(r"([A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}|P24[A-Z0-9]{15,20})", extracted_text)
+  clean_text = extracted_text.replace(" ", "").replace("\n", "")
+
+  # Шукаємо код ПриватБанку (формат P24...) або стандартний код
+  code_match = re.search(r"(P24[A-Z0-9]{15,20}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text)
 
   if not code_match:
-    doc_code_search = re.search(r"(?:код\s*документа|код)\s*[:\-]?\s*([A-Z0-9P24\-]{10,25})", extracted_text, re.IGNORECASE)
+    doc_code_search = re.search(r"(?:коддокумента|код)[:\-]?([A-Z0-9P24\-]{10,25})", clean_text, re.IGNORECASE)
     if doc_code_search:
-      receipt_code = doc_code_search.group(1).replace(" ", "").strip()
+      receipt_code = doc_code_search.group(1).strip()
     else:
       receipt_code = None
   else:
-    receipt_code = code_match.group(0).replace(" ", "").strip()
+    receipt_code = code_match.group(0).strip()
 
   if receipt_code:
+    receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
+
     await message.answer(
         f"🔍 Знайдено код квитанції: `{receipt_code}`\n"
         f"🌐 Перевіряю через державну базу...",
@@ -88,22 +99,30 @@ async def process_and_reply(message: types.Message, extracted_text: str):
           ])
           await message.answer(
               f"✅ Код документа витягнуто: `{receipt_code}`\n"
-              f"Мій Господин, перевірте документ за посиланням нижче ⬇️",
+              f"Мій Господин, документ не знайдено в API, перевірте за посиланням нижче ⬇️",
               parse_mode="Markdown",
               reply_markup=keyboard
           )
       else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📥 Відкрити посилання", url=f"https://check.gov.ua/{receipt_code}")]
+        ])
         await message.answer(
             f"✅ Код витягнуто: `{receipt_code}`\n\n"
-            f"📥 Офіційне посилання: https://check.gov.ua/{receipt_code}",
-            parse_mode="Markdown"
+            f"📥 Офіційне посилання:",
+            parse_mode="Markdown",
+            reply_markup=keyboard
         )
     except Exception as e:
       logging.error(f"Помилка API: {e}")
+      keyboard = InlineKeyboardMarkup(inline_keyboard=[
+          [InlineKeyboardButton(text="📥 Офіційне посилання", url=f"https://check.gov.ua/{receipt_code}")]
+      ])
       await message.answer(
           f"✅ Код знайдено: `{receipt_code}`\n\n"
-          f"📥 Офіційне посилання: https://check.gov.ua/{receipt_code}",
-          parse_mode="Markdown"
+          f"📥 Перевірте документ за посиланням нижче:",
+          parse_mode="Markdown",
+          reply_markup=keyboard
       )
   else:
     await message.answer("Не вдалося розпізнати код квитанції Мій Господин. Надішли чіткіший скріншот або файл PDF.")
@@ -134,7 +153,7 @@ async def handle_document(message: types.Message):
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-  await message.answer("⏳ Сканую складний скріншот Мій Господин...")
+  await message.answer("⏳ Сканую та перевіряю квитанцію Мій Господин...")
   
   file_id = message.photo[-1].file_id
   file_info = await bot.get_file(file_id)
