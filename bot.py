@@ -22,7 +22,6 @@ async def cmd_start(message: types.Message):
 
 
 def extract_full_text(image_path: str) -> str:
-  """Якісне зчитування українського та англійського тексту без жорстких обмежень"""
   try:
     img = Image.open(image_path)
     img = img.resize((img.width * 3, img.height * 3), Image.Resampling.LANCZOS)
@@ -32,7 +31,7 @@ def extract_full_text(image_path: str) -> str:
     enhancer = ImageEnhance.Contrast(img)
     img = enhancer.enhance(2.5)
 
-    # Використовуємо стандартне двомовне розпізнавання (укр + англ)
+    # Використовуємо комбінацію англійської та української мов
     text = pytesseract.image_to_string(img, lang='eng+ukr')
     return text
   except Exception as e:
@@ -89,55 +88,71 @@ async def handle_photo(message: types.Message):
 
 
 async def process_receipt_data(message: types.Message, full_text: str):
-  # Логуємо для перевірки в консолі Render, що саме розпізнав бот
-  logging.info(f"РОЗПІЗНАНИЙ ТЕКСТ:\n{full_text}")
+  # Виводимо весь розпізнаний текст у логи Render для зручності налаштування
+  logging.info(f"--- ПОВНИЙ ТЕКСТ З КВИТАНЦІЇ ---\n{full_text}\n-----------------------------")
 
   clean_text_no_spaces = full_text.replace(" ", "").replace("\n", "")
 
-  # 1. Пошук номера квитанції (формат A576-M9T4-4PX4-XAXH, P24... або подібні)
+  # 1. Пошук номера квитанції
   code_match = re.search(r"(P24[A-Z0-9]{10,25}D[A-Z0-9]{1,6}|[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})", clean_text_no_spaces, re.IGNORECASE)
-
   if not code_match:
     doc_code_search = re.search(r"(?:квитанція|коддокумента|код)[:\-]?\s*([A-Z0-9P24\-]{10,30})", full_text, re.IGNORECASE)
-    if doc_code_search:
-      receipt_code = doc_code_search.group(1).strip()
-    else:
-      receipt_code = None
+    receipt_code = doc_code_search.group(1).strip() if doc_code_search else "Не знайдено"
   else:
     receipt_code = code_match.group(0).strip()
 
-  if not receipt_code:
-    await message.answer("❌ Не вдалося знайти номер квитанції. Надішли чіткіший скріншот Мій Господин.")
-    return
-
   receipt_code = re.sub(r'[^A-Z0-9\-]', '', receipt_code)
 
-  # 2. Витягування Відправника (шукаємо рядок після слова Відправник)
-  sender_match = re.search(r"Відправник[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s\.]{5,50})", full_text)
-  sender_str = sender_match.group(1).strip() if sender_match else "Не вказано"
+  # 2. Пошук Відправника (шукаємо ПІБ після слова «Відправник» або «Ім'я» у блоці відправника)
+  sender_str = "Не вказано"
+  sender_block = re.search(r"Відправник.*?(?=Одержувач|Отримувач|$)", full_text, re.DOTALL | re.IGNORECASE)
+  if sender_block:
+    name_match = re.search(r"(?:Ім'?я|ПІБ)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s]{6,40})", sender_block.group(0))
+    if name_match:
+      sender_str = name_match.group(1).strip()
 
-  # 3. Витягування Одержувача / Картки
-  payee_match = re.search(r"(?:Одержувач|Отримувач)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z0-9\s\.,\*\-_]{5,60})", full_text)
-  payee_str = payee_match.group(1).strip() if payee_match else "Не вказано"
+  # 3. Пошук Отримувача та його карти/рахунку
+  payee_str = "Не вказано"
+  payee_block = re.search(r"(?:Одержувач|Отримувач).*?(?=Деталі|Сума|$)", full_text, re.DOTALL | re.IGNORECASE)
+  if payee_block:
+    block_text = payee_block.group(0)
+    p_name = re.search(r"(?:Ім'?я)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s\.]{2,25})", block_text)
+    p_card = re.search(r"(?:UA\d{2}\d{4,}\d*|\d{4}\s?\*{4}\s?\*{4}\s?\d{4})", block_text)
+    
+    name_val = p_name.group(1).strip() if p_name else ""
+    card_val = p_card.group(0).strip() if p_card else ""
+    if name_val or card_val:
+      payee_str = f"{name_val}, {card_val}".strip(", ")
 
-  # 4. Витягування Суми (підтримує числа з крапкою/комою та символи грн, UAH, ₴)
-  amount_match = re.search(r"Сума[:\s]*([\d\s\.,]+)\s*(?:UAH|грн|₴)?", full_text, re.IGNORECASE)
+  # Якщо блоковий пошук не спрацював, шукаємо просто по рядках
+  if payee_str == "Не вказано":
+    alt_payee = re.search(r"(?:Одержувач|Отримувач)[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z\s,\*\-\d]{5,50})", full_text)
+    if alt_payee:
+      payee_str = alt_payee.group(1).strip()
+
+  # 4. Пошук Суми (у Monobank це зазвичай сума поруч з «Сума (грн)» або просто число з копійками)
+  amount_str = "Не вказано"
+  amount_match = re.search(r"Сума\s*(?:\(грн\))?[:\s]*([\d\s\.,]+)", full_text, re.IGNORECASE)
   if amount_match:
     amount_str = amount_match.group(1).replace(" ", "").strip()
   else:
-    # Запасний пошук будь-якого числа з копійками
-    alt_amount = re.search(r"(\d+[\.,]\d{2})\s*(?:₴|грн|UAH)?", full_text, re.IGNORECASE)
-    amount_str = alt_amount.group(1) if alt_amount else "Не вказано"
+    alt_amount = re.search(r"(\d{1,3}(?:\s?\d{3})*[\.,]\d{2})\s*(?:₴|грн|UAH)?", full_text, re.IGNORECASE)
+    if alt_amount:
+      amount_str = alt_amount.group(1).replace(" ", "").strip()
 
-  # 5. Витягування Дати та часу
-  date_match = re.search(r"(?:Дата|Операція)[:\s]*(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text)
+  # 5. Пошук Дати та часу операції
+  date_str = "Не вказано"
+  date_match = re.search(r"(?:Дата і час операції|Дата)[:\s]*(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text, re.IGNORECASE)
   if not date_match:
     date_match = re.search(r"(\d{2}[\-\.]\d{2}[\-\.]\d{4}\s*\d{2}:\d{2})", full_text)
-  date_str = date_match.group(1).strip() if date_match else "Не вказано"
+  if date_match:
+    date_str = date_match.group(1).strip()
 
-  # 6. Витягування Призначення платежу
-  purpose_match = re.search(r"Призначення[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z0-9\s\.,\-]{3,60})", full_text)
-  purpose_str = purpose_match.group(1).strip() if purpose_match else "Переказ коштів"
+  # 6. Призначення платежу
+  purpose_str = "Переказ коштів"
+  purpose_match = re.search(r"Призначення платежу[:\s]*([А-Яа-яІіЇїЄєҐґA-Za-z0-9\s\.,\-]{3,60})", full_text, re.IGNORECASE)
+  if purpose_match:
+    purpose_str = purpose_match.group(1).strip()
 
   # Формуємо посилання для перевірки
   if receipt_code.startswith("P24"):
@@ -172,7 +187,7 @@ async def main():
   except Exception:
     pass
     
-  logging.info("Бот запущено успішно!")
+  logging.info("Бот успішно запущено!")
   await dp.start_polling(bot, handle_signals=False, close_bot_session=True)
 
 
