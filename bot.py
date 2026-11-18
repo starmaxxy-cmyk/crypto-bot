@@ -1,15 +1,26 @@
-# --- ПАКЕТНИЙ ЗБІР І ОЧИЩЕННЯ ЗАЯВОК ДЛЯ ЕКСПОРТУ В ТАБЛИЦЮ ---
+# --- ПАКЕТНИЙ ЗБІР І ОЧИЩЕННЯ ЗАЯВОК ---
 order_batches = {}
 
-@dp.message(F.forward_from_chat | F.forward_from)
+@dp.message(F.forward_from_chat | F.forward_from | F.forward_origin)
 async def catch_and_clean_order(message: types.Message):
+    await process_order_message(message)
+
+# Також зробимо обробку, якщо ви просто скопіюєте і вставите текст заявки без пересилання
+@dp.message(F.text & ~F.text.startswith('/'))
+async def catch_text_order(message: types.Message):
+    # Ловимо тільки ті повідомлення, де є слова Exchange або New order
+    text = message.text or ""
+    if "Exchange" in text or "order" in text:
+        await process_order_message(message)
+
+async def process_order_message(message: types.Message):
     user_id = message.from_user.id
     text = message.text or message.caption or ""
     
     if not text:
         return
 
-    # Витягуємо номер заявки (наприклад, #61929)
+    # Витягуємо номер заявки (наприклад, #74141)
     order_id_match = re.search(r'#(\d+)', text)
     order_id = order_id_match.group(1) if order_id_match else "00000"
     
@@ -30,13 +41,13 @@ async def catch_and_clean_order(message: types.Message):
     order_batches[user_id].append(cleaned_line)
     count = len(order_batches[user_id])
     
-    await message.answer(f"✅ Заявку очищено! У стовпчику: {count}\nЯк закінчите пересилати, напишіть /export")
+    await message.answer(f"✅ Заявку очищено! У стовпчику: {count}\nЯк закінчите, напишіть /export")
 
 @dp.message(Command("export"))
 async def export_batch(message: types.Message):
     user_id = message.from_user.id
     if user_id not in order_batches or not order_batches[user_id]:
-        await message.answer("⚠️ Стовпчик порожній.")
+        await message.answer("⚠️ Стовпчик порожній. Пересилайте заявки!")
         return
         
     # Формуємо блок для копіювання одним кліком
