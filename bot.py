@@ -47,12 +47,22 @@ def is_today_message(message: types.Message) -> bool:
     return msg_date == today_str
 
 
-def extract_in_amount(in_text: str) -> str:
-    """Витягує суму з частини IN."""
-    match = re.search(r'([0-9]+(?:[.,][0-9]+)?)', in_text)
-    if not match:
-        return ""
-    return match.group(1).replace('.', ',')
+def extract_usdt_amount(in_text: str, out_text: str) -> str:
+    """
+    Витягує суму саме в USDT з IN або OUT
+    (наприклад, 'OUT:724.85 Tether TRC20 USDT' -> '724,85').
+    """
+    for side_text in (out_text, in_text):
+        if "USDT" in side_text.upper():
+            match = re.search(r'([0-9]+(?:[.,][0-9]+)?)\s*[^\n]*?USDT', side_text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).replace('.', ',')
+
+    # Запасний варіант, якщо USDT написано окремо або в іншому форматі
+    fallback = re.search(r'([0-9]+(?:[.,][0-9]+)?)', f"{out_text} {in_text}")
+    if fallback:
+        return fallback.group(1).replace('.', ',')
+    return ""
 
 
 def is_cash_exchange(in_text: str, out_text: str) -> bool:
@@ -63,7 +73,7 @@ def is_cash_exchange(in_text: str, out_text: str) -> bool:
 
 def parse_order_entry(text: str) -> dict[str, str] | None:
     """
-    Повертає словник з очищеним рядком операції та сумою заявки.
+    Повертає словник з очищеним рядком операції та сумою заявки в USDT.
     Бере лише:
     - статус 'In payout processing'
     - валюту 'UAH'
@@ -95,7 +105,7 @@ def parse_order_entry(text: str) -> dict[str, str] | None:
         return None
 
     line = f"#{order_id}. Exchange: IN: {in_text} OUT: {out_text}"
-    amount = extract_in_amount(in_text)
+    amount = extract_usdt_amount(in_text, out_text)
     return {"line": line, "amount": amount}
 
 
@@ -135,7 +145,7 @@ def build_check_link(receipt_code: str, full_text: str) -> tuple[str, str]:
 async def cmd_start(message: types.Message):
     await message.answer(
         "Надішли мені квитанцію Мій Господин 🫡\n\n"
-        "Або напиши /export, щоб забрати два стовпчики (операції та суми заявок) за сьогодні."
+        "Або напиши /export, щоб забрати два стовпчики (операції та суми в USDT) за сьогодні."
     )
 
 
@@ -280,7 +290,7 @@ async def export_channel_batch(message: types.Message):
         lines_block += f"{item['line']}\n"
     lines_block += "```"
 
-    amounts_block = "💵 2. Стовпчик «Сума заявки»:\n\n```text\n"
+    amounts_block = "💵 2. Стовпчик «Сума заявки» (USDT):\n\n```text\n"
     for item in orders:
         amounts_block += f"{item['amount']}\n"
     amounts_block += "```\n💡 Скопіюйте спочатку один блок і вставте (Ctrl+V), потім — другий у сусідній стовпчик."
