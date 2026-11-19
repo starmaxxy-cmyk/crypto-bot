@@ -27,12 +27,19 @@ daily_orders_state = {
 }
 
 
+def reset_orders_for_today() -> str:
+    """Оновлює дату на поточний день за Києвом і очищує список заявок."""
+    today_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
+    daily_orders_state["date"] = today_str
+    daily_orders_state["orders"] = []
+    return today_str
+
+
 def get_today_orders() -> list[dict[str, str]]:
     """Повертає список заявок за сьогодні. Якщо настав новий день — очищує вчорашні."""
     today_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
     if daily_orders_state["date"] != today_str:
-        daily_orders_state["date"] = today_str
-        daily_orders_state["orders"] = []
+        reset_orders_for_today()
     return daily_orders_state["orders"]
 
 
@@ -54,11 +61,14 @@ def extract_usdt_amount(in_text: str, out_text: str) -> str:
     """
     for side_text in (out_text, in_text):
         if "USDT" in side_text.upper():
-            match = re.search(r'([0-9]+(?:[.,][0-9]+)?)\s*[^\n]*?USDT', side_text, flags=re.IGNORECASE)
+            match = re.search(
+                r'([0-9]+(?:[.,][0-9]+)?)\s*[^\n]*?USDT',
+                side_text,
+                flags=re.IGNORECASE,
+            )
             if match:
                 return match.group(1).replace('.', ',')
 
-    # Запасний варіант, якщо USDT написано окремо або в іншому форматі
     fallback = re.search(r'([0-9]+(?:[.,][0-9]+)?)', f"{out_text} {in_text}")
     if fallback:
         return fallback.group(1).replace('.', ',')
@@ -299,13 +309,32 @@ async def export_channel_batch(message: types.Message):
     await message.answer(f"{lines_block}\n\n{amounts_block}", parse_mode="Markdown")
 
 
+async def daily_midnight_cleaner():
+    """Щохвилини перевіряє настання 00:00 за Києвом і очищує вчорашні заявки."""
+    while True:
+        await asyncio.sleep(60)
+        today_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
+        if daily_orders_state["date"] != today_str:
+            cleared_count = len(daily_orders_state["orders"])
+            reset_orders_for_today()
+            logging.info(
+                "О 00:00 (Europe/Kyiv) виконано автоочистку заявок. Видалено записів: %s, нова дата: %s",
+                cleared_count,
+                today_str,
+            )
+
+
 async def main():
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(
-        bot,
-        drop_pending_updates=True,
-        allowed_updates=dp.resolve_used_update_types(),
-    )
+    cleaner_task = asyncio.create_task(daily_midnight_cleaner())
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(
+            bot,
+            drop_pending_updates=True,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
+    finally:
+        cleaner_task.cancel()
 
 
 if __name__ == "__main__":
