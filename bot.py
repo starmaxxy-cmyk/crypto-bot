@@ -1,7 +1,10 @@
 import asyncio
+from datetime import datetime
 import logging
 import os
 import re
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
 import pdfplumber
 from PIL import Image, ImageEnhance, ImageOps
 import pytesseract
@@ -10,16 +13,98 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 TOKEN = os.environ.get("BOT_TOKEN")
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-order_batches = {}
+# Сховище заявок за поточний день: {"date": "2026-11-19", "orders": [...]}
+daily_orders_state = {
+    "date": datetime.now(KYIV_TZ).strftime("%Y-%m-%d"),
+    "orders": [],
+}
+
+
+def get_today_orders() -> list[str]:
+    """Повертає список заявок за сьогодні. Якщо настав новий день — очищує вчорашні."""
+    today_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
+    if daily_orders_state["date"] != today_str:
+        daily_orders_state["date"] = today_str
+        daily_orders_state["orders"] = []
+    return daily_orders_state["orders"]
+
+
+def parse_order_line(text: str) -> str | None:
+    """
+    Перетворює текст заявки на чистий рядок: #61929. Exchange: IN: ... OUT: ...
+    Бере лише заявки зі статусом 'In payout processing' та валютою 'UAH'.
+    """
+    if not text:
+        return None
+    if "In payout processing" not in text:
+        return None
+    if "UAH" not in text:
+        return None
+    if "#" not in text or "Exchange:" not in text:
+        return None
+
+    order_id_match = re.search(r'#(\d+)', text)
+    order_id = order_id_match.group(1) if order_id_match else "00000"
+
+    in_match = re.search(r'IN:\s*([^\n]+)', text)
+    in_text = in_match.group(1).strip() if in_match else ""
+
+    out_match = re.search(r'OUT:\s*([^\n]+)', text)
+    out_text = out_match.group(1).split('\n')[0].strip() if out_match else ""
+
+    if not in_text and not out_text:
+        return None
+
+    return f"#{order_id}. Exchange: IN: {in_text} OUT: {out_text}"
+
+
+def extract_receipt_code(text: str) -> str:
+    """Акуратно витягує номер квитанції (наприклад, P24A... або формат 7562-A14T-TCP9-KT64)."""
+    # Спочатку шукаємо формат квитанцій з дефісами (як у Monobank: 7562-A14T-TCP9-KT64)
+    hyphen_match = re.search(r'\b[A-Z0-9]{4}(?:-[A-Z0-9]{4}){2,4}\b', text)
+    if hyphen_match:
+        return hyphen_match.group(0).strip()
+
+    # Далі шукаємо суцільний код (наприклад P24A... або інший довгий ідентифікатор)
+    code_match = re.search(r'\b(?:P24[A-Z0-9]{12,35}|[A-Z0-9]{16,40})\b', text)
+    if code_match:
+        return code_match.group(0).strip()
+
+    return "Не знайдено"
+
+
+def build_check_link(receipt_code: str, full_text: str) -> tuple[str, str]:
+    """Формує коректне посилання та підпис кнопки для перевірки квитанції."""
+    clean_code = receipt_code.strip() if receipt_code and receipt_code != "Не знайдено" else ""
+    upper_text = full_text.upper()
+
+    if clean_code.startswith("P24") or "ПРИВАТ" in upper_text or "PRIVAT" in upper_text:
+        if clean_code:
+            url = f"https://www.privatbank.ua/sendmoney/check?reference={quote(clean_code)}"
+        else:
+            url = "https://www.privatbank.ua/sendmoney/check"
+        return url, "ПриватБанку"
+
+    if clean_code:
+        url = f"https://check.gov.ua/{quote(clean_code)}"
+    else:
+        url = "https://check.gov.ua/"
+    return url, "check.gov.ua"
+
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("Надішли мені квитанцію Мій Господин 🫡")
+    await message.answer(
+        "Надішли мені квитанцію Мій Господин 🫡\n\n"
+        "Або напиши /export, щоб забрати сьогоднішні UAH заявки (In payout processing) з каналу."
+    )
+
 
 # ==========================================
 # 1. ОБРОБКА КВИТАНЦІЙ (СКРІНШОТИ ТА PDF)
@@ -34,13 +119,14 @@ def extract_full_text(image_path: str) -> str:
         img = enhancer.enhance(2.5)
         text = pytesseract.image_to_string(img, lang='eng+ukr')
         return text
-    except Exception as e:
+    except Exception:
         return ""
+
 
 @dp.message(F.photo | F.document)
 async def handle_receipt(message: types.Message):
     status_msg = await message.answer("⏳ Зчитую реквізити квитанції Мій Господин...")
-    
+
     file_id = None
     file_name = ""
     if message.photo:
@@ -48,16 +134,15 @@ async def handle_receipt(message: types.Message):
         file_name = "receipt.jpg"
     elif message.document:
         file_id = message.document.file_id
-        file_name = message.document.file_name.lower()
+        file_name = (message.document.file_name or "receipt.pdf").lower()
 
     if not file_id:
         await status_msg.edit_text("❌ Не вдалося отримати файл.")
         return
 
     file = await bot.get_file(file_id)
-    file_path_on_server = file.file_path
-    downloaded_file = await bot.download_file(file_path_on_server)
-    
+    downloaded_file = await bot.download_file(file.file_path)
+
     local_filename = f"temp_{message.from_user.id}_{file_name}"
     with open(local_filename, "wb") as f:
         f.write(downloaded_file.read())
@@ -68,9 +153,9 @@ async def handle_receipt(message: types.Message):
             with pdfplumber.open(local_filename) as pdf:
                 for page in pdf.pages:
                     extracted_text += page.extract_text() or ""
-        except Exception as e:
+        except Exception:
             pass
-    
+
     if not extracted_text.strip():
         extracted_text = extract_full_text(local_filename)
 
@@ -78,21 +163,20 @@ async def handle_receipt(message: types.Message):
         os.remove(local_filename)
 
     # 1. Парсинг коду квитанції
-    code_match = re.search(r'(?:[A-Za-z0-9]{15,45}|[A-Z0-9-]{15,})', extracted_text)
-    receipt_code = code_match.group(0) if code_match else "Не знайдено"
+    receipt_code = extract_receipt_code(extracted_text)
 
-    # 2. Надійний пошук максимальної суми на квитанції
+    # 2. Пошук максимальної суми на квитанції
     amount = "Не вказано"
     found_amounts = re.findall(r'\b([0-9]{1,3}(?:\s?[0-9]{3})*[\.,]\d{2})\b', extracted_text)
-    
+
     valid_amounts = []
     for a in found_amounts:
         clean_a = a.replace(' ', '').replace(',', '.')
         try:
             val = float(clean_a)
-            if val > 1.0: 
+            if val > 1.0:
                 valid_amounts.append(val)
-        except:
+        except Exception:
             pass
 
     if valid_amounts:
@@ -102,13 +186,8 @@ async def handle_receipt(message: types.Message):
     date_match = re.search(r'(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})', extracted_text)
     receipt_date = date_match.group(1) if date_match else "Не вказано"
 
-    # Посилання для перевірки
-    if "P24" in receipt_code or "PRIVAT" in extracted_text.upper():
-        check_url = f"https://www.privatbank.ua/sendmoney/check?reference={receipt_code}"
-        bank_name = "ПриватБанку"
-    else:
-        check_url = f"https://check.gov.ua/{receipt_code}"
-        bank_name = "check.gov.ua"
+    # 4. Формуємо коректне посилання для перевірки
+    check_url, bank_name = build_check_link(receipt_code, extracted_text)
 
     response_text = (
         f"✅ Номер квитанції: `{receipt_code}`\n\n"
@@ -126,53 +205,46 @@ async def handle_receipt(message: types.Message):
 
 
 # ==========================================
-# 2. ПАКЕТНИЙ ЗБІР І ОЧИЩЕННЯ ЗАЯВОК
+# 2. АВТОЗБІР ЗАЯВОК З КАНАЛУ ТА ЕКСПОРТ
 # ==========================================
-@dp.message(F.text & ~F.text.startswith('/'))
-async def catch_exchange_orders(message: types.Message):
-    user_id = message.from_user.id
-    text = message.text or message.caption or ""
-    
-    if "#" not in text or "Exchange:" not in text:
-        return 
+@dp.channel_post(F.text)
+async def catch_channel_payout_orders(message: types.Message):
+    msg_date = (
+        message.date.astimezone(KYIV_TZ).strftime("%Y-%m-%d")
+        if message.date
+        else datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
+    )
+    today_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
+    if msg_date != today_str:
+        return
 
-    order_id_match = re.search(r'#(\d+)', text)
-    order_id = order_id_match.group(1) if order_id_match else "00000"
-    
-    in_match = re.search(r'IN:\s*([^\n]+)', text)
-    in_text = in_match.group(1).strip() if in_match else ""
-    
-    out_match = re.search(r'OUT:\s*([^\n]+)', text)
-    out_text = out_match.group(1).split('\n')[0].strip() if out_match else ""
+    cleaned_line = parse_order_line(message.text or "")
+    if cleaned_line:
+        orders = get_today_orders()
+        orders.append(cleaned_line)
 
-    cleaned_line = f"#{order_id}. Exchange: IN: {in_text} OUT: {out_text}"
-    
-    if user_id not in order_batches:
-        order_batches[user_id] = []
-        
-    order_batches[user_id].append(cleaned_line)
-    count = len(order_batches[user_id])
-    
-    await message.answer(f"✅ Заявку очищено! У стовпчику: {count}\nЯк закінчите пересилати, напишіть /export")
 
 @dp.message(Command("export"))
-async def export_batch(message: types.Message):
-    user_id = message.from_user.id
-    if user_id not in order_batches or not order_batches[user_id]:
-        await message.answer("⚠️ Стовпчик порожній. Пересилайте заявки!")
+async def export_channel_batch(message: types.Message):
+    orders = get_today_orders()
+    today_str = daily_orders_state["date"]
+
+    if not orders:
+        await message.answer(f"⚠️ За сьогодні ({today_str}) нових UAH заявок у списку поки немає.")
         return
-        
-    output_block = "📋 **Готовий стовпчик для таблиці:**\n\n```text\n"
-    for item in order_batches[user_id]:
+
+    output_block = f"📋 **Готовий стовпчик за {today_str} (UAH, In payout processing):**\n\n```text\n"
+    for item in orders:
         output_block += f"{item}\n"
     output_block += "```\n*💡 Скопіюйте текст із блоку вище, клікніть на першу клітинку в таблиці та натисніть Ctrl+V.*"
-    
-    order_batches[user_id] = []
+
+    daily_orders_state["orders"] = []
     await message.answer(output_block, parse_mode="Markdown")
 
 
 async def main():
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
