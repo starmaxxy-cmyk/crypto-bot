@@ -50,7 +50,6 @@ def get_today_orders() -> list[dict]:
 
 
 def add_order_if_new(entry: dict) -> bool:
-    """Додає заявку до денного списку, якщо такої ще не було сьогодні."""
     orders = get_today_orders()
     dedup_key = f"{entry['line']}|{entry['amount']}"
     if dedup_key in daily_orders_state["seen_keys"]:
@@ -71,13 +70,11 @@ def is_today_message(message: types.Message) -> bool:
 
 
 def is_cash_direction(in_text: str, out_text: str) -> bool:
-    """Перевіряє наявність кешу лише в напрямках обміну IN / OUT."""
     directions_text = f"{in_text} {out_text}"
     return bool(re.search(r"\b(cash|кеш|готівк)\b", directions_text, flags=re.IGNORECASE))
 
 
 def extract_target_amount(in_text: str, out_text: str) -> str:
-    """Витягує суму в USDT (якщо є), інакше число з OUT або IN, з комою для таблиць."""
     for side_text in (out_text, in_text):
         if "USDT" in side_text.upper():
             match = re.search(
@@ -208,3 +205,59 @@ def extract_receipt_code(text: str) -> str:
 
 def build_check_link(receipt_code: str, full_text: str) -> tuple[str, str]:
     clean_code = (
+        receipt_code.strip() if receipt_code and receipt_code != "Не знайдено" else ""
+    )
+    upper_text = full_text.upper()
+
+    if clean_code.startswith("P24") or "ПРИВАТ" in upper_text or "PRIVAT" in upper_text:
+        url = (
+            f"https://www.privatbank.ua/sendmoney/check?reference={quote(clean_code)}"
+            if clean_code
+            else "https://www.privatbank.ua/sendmoney/check"
+        )
+        return url, "ПриватБанку"
+
+    url = f"https://check.gov.ua/{quote(clean_code)}" if clean_code else "https://check.gov.ua/"
+    return url, "check.gov.ua"
+
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    orders = get_today_orders()
+    text = (
+        f"Оброблено заявок за сьогодні: {len(orders)}. "
+        f"Заповніть таблицю до 00:00, бо дані будуть очищені.\n\n"
+        f"Оберіть валюту або напрямок кнопкою нижче:"
+    )
+    await message.answer(text, reply_markup=build_main_keyboard())
+
+
+@dp.message(Command("status"))
+async def cmd_status(message: types.Message):
+    orders = get_today_orders()
+    await message.answer(
+        f"Бот активний для команди. Дата (Київ): {daily_orders_state['date']}. "
+        f"Заявок у пам'яті за сьогодні: {len(orders)}.",
+        reply_markup=build_main_keyboard(),
+    )
+
+
+@dp.callback_query(F.data == "open_cash_menu")
+async def open_cash_menu_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            "Оберіть валюту для напрямку Cash:",
+            reply_markup=build_cash_keyboard(),
+        )
+
+
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    orders = get_today_orders()
+    if callback.message:
+        await callback.message.edit_text(
+            f"Оброблено заявок за сьогодні: {len(orders)}. "
+            f"Заповніть таблицю до 00:00, бо дані будуть очищені.\n\n"
+            f"О
