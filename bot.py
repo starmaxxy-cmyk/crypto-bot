@@ -35,10 +35,24 @@ def get_today_orders() -> list[str]:
     return daily_orders_state["orders"]
 
 
+def is_today_message(message: types.Message) -> bool:
+    """Перевіряє, чи повідомлення прийшло за поточний день за київським часом."""
+    msg_date = (
+        message.date.astimezone(KYIV_TZ).strftime("%Y-%m-%d")
+        if message.date
+        else datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
+    )
+    today_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
+    return msg_date == today_str
+
+
 def parse_order_line(text: str) -> str | None:
     """
     Перетворює текст заявки на чистий рядок: #61929. Exchange: IN: ... OUT: ...
-    Бере лише заявки зі статусом 'In payout processing' та валютою 'UAH'.
+    Бере лише:
+    - статус 'In payout processing'
+    - валюту 'UAH'
+    - виключає кеш ('cash', 'кеш', наприклад 'Cash Kyiv UAH')
     """
     if not text:
         return None
@@ -47,6 +61,10 @@ def parse_order_line(text: str) -> str | None:
     if "UAH" not in text:
         return None
     if "#" not in text or "Exchange:" not in text:
+        return None
+
+    lower_text = text.lower()
+    if "cash" in lower_text or "кеш" in lower_text:
         return None
 
     order_id_match = re.search(r'#(\d+)', text)
@@ -65,13 +83,11 @@ def parse_order_line(text: str) -> str | None:
 
 
 def extract_receipt_code(text: str) -> str:
-    """Акуратно витягує номер квитанції (наприклад, P24A... або формат 7562-A14T-TCP9-KT64)."""
-    # Спочатку шукаємо формат квитанцій з дефісами (як у Monobank: 7562-A14T-TCP9-KT64)
+    """Акуратно витягує номер квитанції."""
     hyphen_match = re.search(r'\b[A-Z0-9]{4}(?:-[A-Z0-9]{4}){2,4}\b', text)
     if hyphen_match:
         return hyphen_match.group(0).strip()
 
-    # Далі шукаємо суцільний код (наприклад P24A... або інший довгий ідентифікатор)
     code_match = re.search(r'\b(?:P24[A-Z0-9]{12,35}|[A-Z0-9]{16,40})\b', text)
     if code_match:
         return code_match.group(0).strip()
@@ -102,7 +118,7 @@ def build_check_link(receipt_code: str, full_text: str) -> tuple[str, str]:
 async def cmd_start(message: types.Message):
     await message.answer(
         "Надішли мені квитанцію Мій Господин 🫡\n\n"
-        "Або напиши /export, щоб забрати сьогоднішні UAH заявки (In payout processing) з каналу."
+        "Або напиши /export, щоб забрати сьогоднішні UAH заявки (In payout processing, без кешу)."
     )
 
 
@@ -162,10 +178,8 @@ async def handle_receipt(message: types.Message):
     if os.path.exists(local_filename):
         os.remove(local_filename)
 
-    # 1. Парсинг коду квитанції
     receipt_code = extract_receipt_code(extracted_text)
 
-    # 2. Пошук максимальної суми на квитанції
     amount = "Не вказано"
     found_amounts = re.findall(r'\b([0-9]{1,3}(?:\s?[0-9]{3})*[\.,]\d{2})\b', extracted_text)
 
@@ -182,11 +196,9 @@ async def handle_receipt(message: types.Message):
     if valid_amounts:
         amount = f"{max(valid_amounts):.2f}"
 
-    # 3. Парсинг дати та часу
     date_match = re.search(r'(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})', extracted_text)
     receipt_date = date_match.group(1) if date_match else "Не вказано"
 
-    # 4. Формуємо коректне посилання для перевірки
     check_url, bank_name = build_check_link(receipt_code, extracted_text)
 
     response_text = (
@@ -205,17 +217,11 @@ async def handle_receipt(message: types.Message):
 
 
 # ==========================================
-# 2. АВТОЗБІР ЗАЯВОК З КАНАЛУ ТА ЕКСПОРТ
+# 2. ЗБІР ЗАЯВОК (КАНАЛ + ПЕРЕСЛАНІ) ТА ЕКСПОРТ
 # ==========================================
 @dp.channel_post(F.text)
 async def catch_channel_payout_orders(message: types.Message):
-    msg_date = (
-        message.date.astimezone(KYIV_TZ).strftime("%Y-%m-%d")
-        if message.date
-        else datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
-    )
-    today_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
-    if msg_date != today_str:
+    if not is_today_message(message):
         return
 
     cleaned_line = parse_order_line(message.text or "")
@@ -224,26 +230,55 @@ async def catch_channel_payout_orders(message: types.Message):
         orders.append(cleaned_line)
 
 
+@dp.message(F.text & ~F.text.startswith('/'))
+async def catch_forwarded_payout_orders(message: types.Message):
+    if not is_today_message(message):
+        return
+
+    text = message.text or ""
+    if "In payout processing" not in text or "UAH" not in text:
+        return
+
+    cleaned_line = parse_order_line(text)
+    if cleaned_line:
+        orders = get_today_orders()
+        orders.append(cleaned_line)
+        await message.answer(
+            f"✅ Заявку додано в сьогоднішній список (всього: {len(orders)}). Напишіть /export, коли буде готово."
+        )
+
+
 @dp.message(Command("export"))
 async def export_channel_batch(message: types.Message):
     orders = get_today_orders()
     today_str = daily_orders_state["date"]
 
     if not orders:
-        await message.answer(f"⚠️ За сьогодні ({today_str}) нових UAH заявок у списку поки немає.")
+        await message.answer(
+            f"⚠️ За сьогодні ({today_str}) нових UAH заявок (без кешу) у списку поки немає."
+        )
         return
 
-    output_block = f"📋 **Готовий стовпчик за {today_str} (UAH, In payout processing):**\n\n```text\n"
+    output_block = (
+        f"📋 **Готовий стовпчик за {today_str} (UAH, In payout processing, без кешу):**\n\n```text\n"
+    )
     for item in orders:
         output_block += f"{item}\n"
-    output_block += "```\n*💡 Скопіюйте текст із блоку вище, клікніть на першу клітинку в таблиці та натисніть Ctrl+V.*"
+    output_block += (
+        "```\n*💡 Скопіюйте текст із блоку вище, клікніть на першу клітинку в таблиці та натисніть Ctrl+V.*"
+    )
 
     daily_orders_state["orders"] = []
     await message.answer(output_block, parse_mode="Markdown")
 
 
 async def main():
-    await dp.start_polling(bot)
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(
+        bot,
+        drop_pending_updates=True,
+        allowed_updates=dp.resolve_used_update_types(),
+    )
 
 
 if __name__ == "__main__":
