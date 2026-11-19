@@ -19,14 +19,15 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Сховище заявок за поточний день: {"date": "2026-11-19", "orders": [...]}
+# Сховище заявок за поточний день:
+# {"date": "2026-11-19", "orders": [{"line": "...", "amount": "..."}]}
 daily_orders_state = {
     "date": datetime.now(KYIV_TZ).strftime("%Y-%m-%d"),
     "orders": [],
 }
 
 
-def get_today_orders() -> list[str]:
+def get_today_orders() -> list[dict[str, str]]:
     """Повертає список заявок за сьогодні. Якщо настав новий день — очищує вчорашні."""
     today_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
     if daily_orders_state["date"] != today_str:
@@ -46,13 +47,23 @@ def is_today_message(message: types.Message) -> bool:
     return msg_date == today_str
 
 
-def parse_order_line(text: str) -> str | None:
+def extract_in_amount(in_text: str) -> str:
+    """Витягує суму з частини IN (наприклад, '630 Tether TRC20 USDT' -> '630,00' або '1,85')."""
+    match = re.search(r'([0-9]+(?:[.,][0-9]+)?)', in_text)
+    if not match:
+        return ""
+    raw_num = match.group(1)
+    # Якщо потрібна крапка замість коми — замініть ',' на '.'
+    return raw_num.replace('.', ',')
+
+
+def parse_order_entry(text: str) -> dict[str, str] | None:
     """
-    Перетворює текст заявки на чистий рядок: #61929. Exchange: IN: ... OUT: ...
+    Повертає словник з очищеним рядком операції та сумою заявки.
     Бере лише:
     - статус 'In payout processing'
     - валюту 'UAH'
-    - виключає кеш ('cash', 'кеш', наприклад 'Cash Kyiv UAH')
+    - виключає кеш ('cash', 'кеш')
     """
     if not text:
         return None
@@ -79,7 +90,9 @@ def parse_order_line(text: str) -> str | None:
     if not in_text and not out_text:
         return None
 
-    return f"#{order_id}. Exchange: IN: {in_text} OUT: {out_text}"
+    line = f"#{order_id}. Exchange: IN: {in_text} OUT: {out_text}"
+    amount = extract_in_amount(in_text)
+    return {"line": line, "amount": amount}
 
 
 def extract_receipt_code(text: str) -> str:
@@ -118,7 +131,7 @@ def build_check_link(receipt_code: str, full_text: str) -> tuple[str, str]:
 async def cmd_start(message: types.Message):
     await message.answer(
         "Надішли мені квитанцію Мій Господин 🫡\n\n"
-        "Або напиши /export, щоб забрати сьогоднішні UAH заявки (In payout processing, без кешу)."
+        "Або напиши /export, щоб забрати два стовпчики (операції та суми заявок) за сьогодні."
     )
 
 
@@ -224,10 +237,9 @@ async def catch_channel_payout_orders(message: types.Message):
     if not is_today_message(message):
         return
 
-    cleaned_line = parse_order_line(message.text or "")
-    if cleaned_line:
-        orders = get_today_orders()
-        orders.append(cleaned_line)
+    entry = parse_order_entry(message.text or "")
+    if entry:
+        get_today_orders().append(entry)
 
 
 @dp.message(F.text & ~F.text.startswith('/'))
@@ -239,12 +251,12 @@ async def catch_forwarded_payout_orders(message: types.Message):
     if "In payout processing" not in text or "UAH" not in text:
         return
 
-    cleaned_line = parse_order_line(text)
-    if cleaned_line:
+    entry = parse_order_entry(text)
+    if entry:
         orders = get_today_orders()
-        orders.append(cleaned_line)
+        orders.append(entry)
         await message.answer(
-            f"✅ Заявку додано в сьогоднішній список (всього: {len(orders)}). Напишіть /export, коли буде готово."
+            f"✅ Заявку додано (всього за сьогодні: {len(orders)}). Напишіть /export, коли буде готово."
         )
 
 
@@ -259,17 +271,18 @@ async def export_channel_batch(message: types.Message):
         )
         return
 
-    output_block = (
-        f"📋 **Готовий стовпчик за {today_str} (UAH, In payout processing, без кешу):**\n\n```text\n"
-    )
+    lines_block = "📋 **1. Стовпчик «Операція»:**\n\n```text\n"
     for item in orders:
-        output_block += f"{item}\n"
-    output_block += (
-        "```\n*💡 Скопіюйте текст із блоку вище, клікніть на першу клітинку в таблиці та натисніть Ctrl+V.*"
-    )
+        lines_block += f"{item['line']}\n"
+    lines_block += "```"
+
+    amounts_block = "💵 **2. Стовпчик «Сума заявки»:**\n\n```text\n"
+    for item in orders:
+        amounts_block += f"{item['amount']}\n"
+    amounts_block += "```\n*💡 Скопіюйте спочатку один блок і вставте (`Ctrl+V`), потім — другий у сусідній стовпчик.*"
 
     daily_orders_state["orders"] = []
-    await message.answer(output_block, parse_mode="Markdown")
+    await message.answer(f"{lines_block}\n\n{amounts_block}", parse_mode="Markdown")
 
 
 async def main():
