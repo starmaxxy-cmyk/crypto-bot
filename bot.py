@@ -106,6 +106,7 @@ def parse_order_entry(text: str) -> dict | None:
         return None
 
     order_id_match = re.search(r"#(\d+)", text)
+    order_id_num = int(order_id_match.group(1)) if order_id_match else None
     order_id = order_id_match.group(1) if order_id_match else "00000"
 
     in_match = re.search(r"IN:\s*([^\n]+)", text)
@@ -122,12 +123,24 @@ def parse_order_entry(text: str) -> dict | None:
     amount = extract_target_amount(in_text, out_text)
 
     return {
+        "order_id": order_id_num,
         "line": line,
         "amount": amount,
         "in_text": in_text,
         "out_text": out_text,
         "is_cash": cash_flag,
     }
+
+
+def sort_orders_ascending(orders_list: list[dict]) -> list[dict]:
+    """Сортує заявки від найменшого номера до найбільшого (від раніших до новіших)."""
+    return sorted(
+        orders_list,
+        key=lambda item: (
+            0 if item.get("order_id") is not None else 1,
+            item.get("order_id") if item.get("order_id") is not None else 0,
+        ),
+    )
 
 
 def matches_filter(order: dict, tag: str | None) -> bool:
@@ -327,57 +340,4 @@ async def handle_receipt(message: types.Message):
         file_name = "receipt.jpg"
     elif message.document:
         file_id = message.document.file_id
-        file_name = (message.document.file_name or "receipt.pdf").lower()
-
-    if not file_id:
-        await status_msg.edit_text("❌ Не вдалося отримати файл.")
-        return
-
-    file = await bot.get_file(file_id)
-    downloaded_file = await bot.download_file(file.file_path)
-
-    user_tag = message.from_user.id if message.from_user else "team"
-    local_filename = f"temp_{user_tag}_{file_name}"
-    with open(local_filename, "wb") as f:
-        f.write(downloaded_file.read())
-
-    extracted_text = ""
-    if local_filename.endswith(".pdf"):
-        try:
-            with pdfplumber.open(local_filename) as pdf:
-                for page in pdf.pages:
-                    extracted_text += page.extract_text() or ""
-        except Exception:
-            pass
-
-    if not extracted_text.strip():
-        extracted_text = extract_full_text(local_filename)
-
-    if os.path.exists(local_filename):
-        os.remove(local_filename)
-
-    receipt_code = extract_receipt_code(extracted_text)
-
-    amount = "Не вказано"
-    found_amounts = re.findall(r"\b([0-9]{1,3}(?:\s?[0-9]{3})*[\.,]\d{2})\b", extracted_text)
-    valid_amounts = []
-    for a in found_amounts:
-        clean_a = a.replace(" ", "").replace(",", ".")
-        try:
-            val = float(clean_a)
-            if val > 1.0:
-                valid_amounts.append(val)
-        except Exception:
-            pass
-
-    if valid_amounts:
-        amount = f"{max(valid_amounts):.2f}"
-
-    date_match = re.search(r"(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})", extracted_text)
-    receipt_date = date_match.group(1) if date_match else "Не вказано"
-
-    check_url, bank_name = build_check_link(receipt_code, extracted_text)
-
-    response_text = (
-        f"✅ Номер квитанції: `{receipt_code}`\n\n"
-        f"💵 Сума: {
+        file_name = (message.document.file_name or "receipt.pdf").
