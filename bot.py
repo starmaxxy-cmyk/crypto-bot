@@ -442,4 +442,153 @@ async def handle_receipt(message: types.Message):
     if valid_amounts:
         amount = f"{max(valid_amounts):.2f}"
 
-    date_match = re.search(r"(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})",
+    date_match = re.search(r"(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})", extracted_text)
+receipt_date = date_match.group(1) if date_match else "Не вказано"
+
+    check_url, bank_name = build_check_link(receipt_code, extracted_text)
+
+    response_text = (
+        f"✅ Номер квитанції: `{receipt_code}`\n\n"
+        f"💵 Сума: {amount} грн\n"
+        f"📅 Дата: {receipt_date}\n\n"
+        f"⚠️ Квитанція не перевірена, будь ласка, перевірте її самі, бо я тупий!!!\n\n"
+        f"Натисніть кнопку нижче для переходу до офіційного джерела:"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"🏛 Відкрити в {bank_name}", url=check_url)]
+        ]
+    )
+
+    await status_msg.edit_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+@dp.channel_post(F.text)
+async def catch_channel_payout_orders(message: types.Message):
+    if not is_today_message(message):
+        return
+
+    entry = parse_order_entry(message.text or "")
+    if entry:
+        add_order_if_new(entry)
+
+
+@dp.message(F.text & ~F.text.startswith("/"))
+async def catch_orders_quietly(message: types.Message):
+    if not is_today_message(message):
+        return
+
+    entry = parse_order_entry(message.text or "")
+    if entry:
+        add_order_if_new(entry)
+
+
+async def send_filtered_report(target_message: types.Message, tag: str | None):
+    orders = get_today_orders()
+    today_str = daily_orders_state["date"]
+    filtered = sort_orders_ascending([item for item in orders if matches_filter(item, tag)])
+    label = format_filter_label(tag)
+    markup = build_report_keyboard(tag)
+
+    if not filtered:
+        await target_message.answer(
+            f"Оброблено заявок за сьогодні ({today_str}) [{label}]: 0. "
+            f"Заповніть таблицю до 00:00, бо дані будуть очищені.",
+            reply_markup=markup,
+        )
+        return
+
+    lines_block = "📋 1. Стовпчик «Операція»:\n\n```text\n"
+    for item in filtered:
+        lines_block += f"{item['line']}\n"
+    lines_block += "```"
+
+    amounts_block = "💵 2. Стовпчик «Сума заявки»:\n\n```text\n"
+    for item in filtered:
+        amounts_block += f"{item['amount']}\n"
+    amounts_block += "```"
+
+    header = (
+        f"Оброблено заявок за сьогодні ({today_str}) [{label}]: {len(filtered)}. "
+        f"Заповніть таблицю до 00:00, бо дані будуть очищені.\n\n"
+    )
+
+    await target_message.answer(
+        f"{header}{lines_block}\n\n{amounts_block}",
+        parse_mode="Markdown",
+        reply_markup=markup,
+    )
+
+
+@dp.message(Command("export"))
+async def export_channel_batch(message: types.Message):
+    await send_filtered_report(message, tag="ALL")
+
+
+@dp.callback_query(F.data.startswith("filter:"))
+async def filter_by_currency_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    tag = callback.data.split(":", 1)[1] if callback.data else "ALL"
+    if callback.message:
+        await send_filtered_report(callback.message, tag=tag)
+
+
+@dp.callback_query(F.data.startswith("clear_filter:"))
+async def clear_filter_callback(callback: types.CallbackQuery):
+    tag = callback.data.split(":", 1)[1] if callback.data else "ALL"
+    label = format_filter_label(tag)
+    removed = clear_orders_by_tag(tag)
+    remaining_total = len(get_today_orders())
+    await callback.answer(f"Очищено [{label}]: {removed}", show_alert=False)
+    if callback.message:
+        await callback.message.answer(
+            f"🗑 Очищено заявок за фільтром [{label}]: {removed}.\n"
+            f"Залишилось усього за сьогодні: {remaining_total}. "
+            f"Повне очищення відбудеться о 00:00.",
+            reply_markup=build_main_keyboard(),
+        )
+
+
+@dp.callback_query(F.data == "export_today")
+async def export_today_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    if callback.message:
+        await send_filtered_report(callback.message, tag="ALL")
+
+
+async def daily_midnight_cleaner():
+    while True:
+        await asyncio.sleep(60)
+        today_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d")
+        if daily_orders_state["date"] != today_str:
+            cleared_count = len(daily_orders_state["orders"])
+            reset_orders_for_today()
+            logging.info(
+                "О 00:00 (Europe/Kyiv) виконано автоочистку заявок. Видалено: %s, дата: %s",
+                cleared_count,
+                today_str,
+            )
+
+
+async def main():
+    cleaner_task = asyncio.create_task(daily_midnight_cleaner())
+    try:
+        while True:
+            try:
+                await bot.delete_webhook(drop_pending_updates=True)
+                await dp.start_polling(
+                    bot,
+                    drop_pending_updates=True,
+                    allowed_updates=dp.resolve_used_update_types(),
+                )
+                break
+            except TelegramConflictError:
+                logging.warning("Конфлікт getUpdates — інший процес використовує токен. Чекаю 5 сек...")
+                await asyncio.sleep(5)
+    finally:
+        cleaner_task.cancel()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
