@@ -48,13 +48,17 @@ def is_today_message(message: types.Message) -> bool:
 
 
 def extract_in_amount(in_text: str) -> str:
-    """Витягує суму з частини IN (наприклад, '630 Tether TRC20 USDT' -> '630,00' або '1,85')."""
+    """Витягує суму з частини IN."""
     match = re.search(r'([0-9]+(?:[.,][0-9]+)?)', in_text)
     if not match:
         return ""
-    raw_num = match.group(1)
-    # Якщо потрібна крапка замість коми — замініть ',' на '.'
-    return raw_num.replace('.', ',')
+    return match.group(1).replace('.', ',')
+
+
+def is_cash_exchange(in_text: str, out_text: str) -> bool:
+    """Перевіряє, чи є кеш у напрямках IN / OUT (наприклад, Cash UAH, Cash Kyiv UAH)."""
+    directions_lower = f"{in_text} {out_text}".lower()
+    return any(word in directions_lower for word in ("cash", "кеш", "готівк"))
 
 
 def parse_order_entry(text: str) -> dict[str, str] | None:
@@ -63,7 +67,8 @@ def parse_order_entry(text: str) -> dict[str, str] | None:
     Бере лише:
     - статус 'In payout processing'
     - валюту 'UAH'
-    - виключає кеш ('cash', 'кеш')
+    - виключає кеш у напрямках IN/OUT ('Cash UAH', 'Cash Kyiv UAH' тощо),
+      але НЕ чіпає 'crypto-cash' у полі 'Changed by'.
     """
     if not text:
         return None
@@ -72,10 +77,6 @@ def parse_order_entry(text: str) -> dict[str, str] | None:
     if "UAH" not in text:
         return None
     if "#" not in text or "Exchange:" not in text:
-        return None
-
-    lower_text = text.lower()
-    if "cash" in lower_text or "кеш" in lower_text:
         return None
 
     order_id_match = re.search(r'#(\d+)', text)
@@ -88,6 +89,9 @@ def parse_order_entry(text: str) -> dict[str, str] | None:
     out_text = out_match.group(1).split('\n')[0].strip() if out_match else ""
 
     if not in_text and not out_text:
+        return None
+
+    if is_cash_exchange(in_text, out_text):
         return None
 
     line = f"#{order_id}. Exchange: IN: {in_text} OUT: {out_text}"
@@ -271,15 +275,15 @@ async def export_channel_batch(message: types.Message):
         )
         return
 
-    lines_block = "📋 **1. Стовпчик «Операція»:**\n\n```text\n"
+    lines_block = "📋 1. Стовпчик «Операція»:\n\n```text\n"
     for item in orders:
         lines_block += f"{item['line']}\n"
     lines_block += "```"
 
-    amounts_block = "💵 **2. Стовпчик «Сума заявки»:**\n\n```text\n"
+    amounts_block = "💵 2. Стовпчик «Сума заявки»:\n\n```text\n"
     for item in orders:
         amounts_block += f"{item['amount']}\n"
-    amounts_block += "```\n*💡 Скопіюйте спочатку один блок і вставте (`Ctrl+V`), потім — другий у сусідній стовпчик.*"
+    amounts_block += "```\n💡 Скопіюйте спочатку один блок і вставте (Ctrl+V), потім — другий у сусідній стовпчик."
 
     daily_orders_state["orders"] = []
     await message.answer(f"{lines_block}\n\n{amounts_block}", parse_mode="Markdown")
