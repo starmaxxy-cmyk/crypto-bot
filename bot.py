@@ -1,12 +1,14 @@
 import asyncio
 from datetime import datetime
+import json
 import logging
 import os
 import re
+from typing import Any, Awaitable, Callable, Dict
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
 from aiogram.exceptions import TelegramConflictError
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,6 +20,9 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("Не задано змінну середовища BOT_TOKEN")
 
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+USERS_FILE = "allowed_users.json"
+
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 CURRENCIES = ["GBP", "KZT", "UAH", "USD", "EUR", "THB", "GEL"]
 
@@ -27,6 +32,52 @@ logging.basicConfig(
 )
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+
+def load_allowed_users() -> set[int]:
+    users = {ADMIN_ID} if ADMIN_ID else set()
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                users.update(int(uid) for uid in data)
+        except Exception:
+            pass
+    return users
+
+
+def save_allowed_users(users: set[int]) -> None:
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(users), f)
+
+
+ALLOWED_USERS = load_allowed_users()
+
+
+class AccessMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: types.TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        user = data.get("event_from_user")
+        if user is None:
+            return await handler(event, data)
+
+        if isinstance(event, types.Message) and event.text and event.text.strip().startswith("/id"):
+            return await handler(event, data)
+
+        if user.id not in ALLOWED_USERS:
+            if isinstance(event, types.CallbackQuery):
+                await event.answer("⛔ Доступ заборонено", show_alert=True)
+            return
+
+        return await handler(event, data)
+
+
+dp.message.middleware(AccessMiddleware())
+dp.callback_query.middleware(AccessMiddleware())
 
 daily_orders_state = {
     "date": datetime.now(KYIV_TZ).strftime("%Y-%m-%d"),
@@ -326,6 +377,68 @@ def build_check_link(receipt_code: str, full_text: str) -> tuple[str, str]:
 
     url = f"https://check.gov.ua/{quote(clean_code)}" if clean_code else "https://check.gov.ua/"
     return url, "check.gov.ua"
+
+
+@dp.message(Command("id"))
+async def cmd_get_id(message: types.Message):
+    await message.answer(
+        f"Ваш Telegram ID: <code>{message.from_user.id}</code>",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(Command("add"))
+async def cmd_add_user(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Формат: <code>/add 123456789</code>", parse_mode="HTML")
+        return
+    new_id = int(parts[1])
+    ALLOWED_USERS.add(new_id)
+    save_allowed_users(ALLOWED_USERS)
+    await message.answer(
+        f"✅ Користувача <code>{new_id}</code> додано до списку доступу.",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(Command("del"))
+async def cmd_del_user(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Формат: <code>/del 123456789</code>", parse_mode="HTML")
+        return
+    target_id = int(parts[1])
+    if target_id == ADMIN_ID:
+        await message.answer("❌ Не можна видалити головного адміністратора.")
+        return
+    if target_id in ALLOWED_USERS:
+        ALLOWED_USERS.remove(target_id)
+        save_allowed_users(ALLOWED_USERS)
+        await message.answer(
+            f"🗑 Користувача <code>{target_id}</code> видалено.",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer("Цього ID немає у списку.")
+
+
+@dp.message(Command("users"))
+async def cmd_list_users(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    users_str = "\n".join(
+        f"• <code>{uid}</code> {'👑 (Admin)' if uid == ADMIN_ID else ''}"
+        for uid in sorted(ALLOWED_USERS)
+    )
+    await message.answer(
+        f"👥 <b>Доступ до бота мають:</b>\n{users_str}",
+        parse_mode="HTML",
+    )
 
 
 @dp.message(Command("start"))
