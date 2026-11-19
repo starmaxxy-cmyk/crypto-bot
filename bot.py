@@ -65,11 +65,19 @@ class AccessMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
-        if isinstance(event, types.Message) and event.text and event.text.strip().startswith("/id"):
-            return await handler(event, data)
+        if isinstance(event, types.Message) and event.text:
+            clean_text = event.text.strip()
+            if clean_text.startswith("/id"):
+                return await handler(event, data)
 
         if user.id not in ALLOWED_USERS:
-            if isinstance(event, types.CallbackQuery):
+            if (
+                isinstance(event, types.Message)
+                and event.text
+                and event.text.strip().startswith("/start")
+            ):
+                await event.answer("⛔ Доступ заборонено. Зверніться до адміністратора.")
+            elif isinstance(event, types.CallbackQuery):
                 await event.answer("⛔ Доступ заборонено", show_alert=True)
             return
 
