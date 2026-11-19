@@ -443,7 +443,7 @@ async def handle_receipt(message: types.Message):
         amount = f"{max(valid_amounts):.2f}"
 
     date_match = re.search(r"(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2})", extracted_text)
-receipt_date = date_match.group(1) if date_match else "Не вказано"
+    receipt_date = date_match.group(1) if date_match else "Не вказано"
 
     check_url, bank_name = build_check_link(receipt_code, extracted_text)
 
