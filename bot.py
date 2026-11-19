@@ -53,6 +53,16 @@ def save_allowed_users(users: set[int]) -> None:
 
 ALLOWED_USERS = load_allowed_users()
 
+# Зберігаємо (chat_id, message_id) для очищення о 00:00 (без збереження самих даних у файл)
+tracked_messages: list[tuple[int, int]] = []
+
+
+def track_msg(chat_id: int | None, message_id: int | None) -> None:
+    if chat_id and message_id:
+        pair = (chat_id, message_id)
+        if pair not in tracked_messages:
+            tracked_messages.append(pair)
+
 
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
@@ -65,9 +75,9 @@ class AccessMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
-        if isinstance(event, types.Message) and event.text:
-            clean_text = event.text.strip()
-            if clean_text.startswith("/id"):
+        if isinstance(event, types.Message):
+            track_msg(event.chat.id, event.message_id)
+            if event.text and event.text.strip().startswith("/id"):
                 return await handler(event, data)
 
         if user.id not in ALLOWED_USERS:
@@ -389,10 +399,11 @@ def build_check_link(receipt_code: str, full_text: str) -> tuple[str, str]:
 
 @dp.message(Command("id"))
 async def cmd_get_id(message: types.Message):
-    await message.answer(
+    sent = await message.answer(
         f"Ваш Telegram ID: <code>{message.from_user.id}</code>",
         parse_mode="HTML",
     )
+    track_msg(sent.chat.id, sent.message_id)
 
 
 @dp.message(Command("add"))
@@ -401,15 +412,17 @@ async def cmd_add_user(message: types.Message):
         return
     parts = (message.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer("Формат: <code>/add 123456789</code>", parse_mode="HTML")
+        sent = await message.answer("Формат: <code>/add 123456789</code>", parse_mode="HTML")
+        track_msg(sent.chat.id, sent.message_id)
         return
     new_id = int(parts[1])
     ALLOWED_USERS.add(new_id)
     save_allowed_users(ALLOWED_USERS)
-    await message.answer(
+    sent = await message.answer(
         f"✅ Користувача <code>{new_id}</code> додано до списку доступу.",
         parse_mode="HTML",
     )
+    track_msg(sent.chat.id, sent.message_id)
 
 
 @dp.message(Command("del"))
@@ -418,21 +431,25 @@ async def cmd_del_user(message: types.Message):
         return
     parts = (message.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer("Формат: <code>/del 123456789</code>", parse_mode="HTML")
+        sent = await message.answer("Формат: <code>/del 123456789</code>", parse_mode="HTML")
+        track_msg(sent.chat.id, sent.message_id)
         return
     target_id = int(parts[1])
     if target_id == ADMIN_ID:
-        await message.answer("❌ Не можна видалити головного адміністратора.")
+        sent = await message.answer("❌ Не можна видалити головного адміністратора.")
+        track_msg(sent.chat.id, sent.message_id)
         return
     if target_id in ALLOWED_USERS:
         ALLOWED_USERS.remove(target_id)
         save_allowed_users(ALLOWED_USERS)
-        await message.answer(
+        sent = await message.answer(
             f"🗑 Користувача <code>{target_id}</code> видалено.",
             parse_mode="HTML",
         )
+        track_msg(sent.chat.id, sent.message_id)
     else:
-        await message.answer("Цього ID немає у списку.")
+        sent = await message.answer("Цього ID немає у списку.")
+        track_msg(sent.chat.id, sent.message_id)
 
 
 @dp.message(Command("users"))
@@ -443,10 +460,11 @@ async def cmd_list_users(message: types.Message):
         f"• <code>{uid}</code> {'👑 (Admin)' if uid == ADMIN_ID else ''}"
         for uid in sorted(ALLOWED_USERS)
     )
-    await message.answer(
+    sent = await message.answer(
         f"👥 <b>Доступ до бота мають:</b>\n{users_str}",
         parse_mode="HTML",
     )
+    track_msg(sent.chat.id, sent.message_id)
 
 
 @dp.message(Command("start"))
@@ -457,17 +475,19 @@ async def cmd_start(message: types.Message):
         f"Заповніть таблицю до 00:00, бо дані будуть очищені.\n\n"
         f"Оберіть валюту або напрямок кнопкою нижче:"
     )
-    await message.answer(text, reply_markup=build_main_keyboard())
+    sent = await message.answer(text, reply_markup=build_main_keyboard())
+    track_msg(sent.chat.id, sent.message_id)
 
 
 @dp.message(Command("status"))
 async def cmd_status(message: types.Message):
     orders = get_today_orders()
-    await message.answer(
+    sent = await message.answer(
         f"Бот активний для команди. Дата (Київ): {daily_orders_state['date']}. "
         f"Заявок у пам'яті за сьогодні: {len(orders)}.",
         reply_markup=build_main_keyboard(),
     )
+    track_msg(sent.chat.id, sent.message_id)
 
 
 @dp.callback_query(F.data == "open_cash_menu")
@@ -509,6 +529,7 @@ def extract_full_text(image_path: str) -> str:
 @dp.message(F.chat.type == "private", F.photo | F.document)
 async def handle_receipt(message: types.Message):
     status_msg = await message.answer("⏳ Зчитую реквізити квитанції...")
+    track_msg(status_msg.chat.id, status_msg.message_id)
 
     file_id = None
     file_name = ""
@@ -613,11 +634,12 @@ async def send_filtered_report(target_message: types.Message, tag: str | None):
     markup = build_report_keyboard(tag)
 
     if not filtered:
-        await target_message.answer(
+        sent = await target_message.answer(
             f"Оброблено заявок за сьогодні ({today_str}) [{label}]: 0. "
             f"Заповніть таблицю до 00:00, бо дані будуть очищені.",
             reply_markup=markup,
         )
+        track_msg(sent.chat.id, sent.message_id)
         return
 
     lines_block = "📋 1. Стовпчик «Операція»:\n\n```text\n"
@@ -635,11 +657,12 @@ async def send_filtered_report(target_message: types.Message, tag: str | None):
         f"Заповніть таблицю до 00:00, бо дані будуть очищені.\n\n"
     )
 
-    await target_message.answer(
+    sent = await target_message.answer(
         f"{header}{lines_block}\n\n{amounts_block}",
         parse_mode="Markdown",
         reply_markup=markup,
     )
+    track_msg(sent.chat.id, sent.message_id)
 
 
 @dp.message(Command("export"))
@@ -663,12 +686,13 @@ async def clear_filter_callback(callback: types.CallbackQuery):
     remaining_total = len(get_today_orders())
     await callback.answer(f"Очищено [{label}]: {removed}", show_alert=False)
     if callback.message:
-        await callback.message.answer(
+        sent = await callback.message.answer(
             f"🗑 Очищено заявок за фільтром [{label}]: {removed}.\n"
             f"Залишилось усього за сьогодні: {remaining_total}. "
             f"Повне очищення відбудеться о 00:00.",
             reply_markup=build_main_keyboard(),
         )
+        track_msg(sent.chat.id, sent.message_id)
 
 
 @dp.callback_query(F.data == "export_today")
@@ -685,8 +709,35 @@ async def daily_midnight_cleaner():
         if daily_orders_state["date"] != today_str:
             cleared_count = len(daily_orders_state["orders"])
             reset_orders_for_today()
+
+            for chat_id, msg_id in list(tracked_messages):
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except Exception:
+                    pass
+            tracked_messages.clear()
+
+            notify_text = (
+                f"🕛 <b>00:00 (Київ) — чат і базу повністю очищено!</b>\n"
+                f"Усі заявки вище очищено (видалено за вчора: {cleared_count}).\n"
+                f"Почато новий день ({today_str}). Оберіть напрямок:"
+            )
+            for uid in list(ALLOWED_USERS):
+                if not uid:
+                    continue
+                try:
+                    sent = await bot.send_message(
+                        chat_id=uid,
+                        text=notify_text,
+                        parse_mode="HTML",
+                        reply_markup=build_main_keyboard(),
+                    )
+                    track_msg(sent.chat.id, sent.message_id)
+                except Exception as e:
+                    logging.warning("Не вдалося надіслати 00:00 сповіщення %s: %s", uid, e)
+
             logging.info(
-                "О 00:00 (Europe/Kyiv) виконано автоочистку заявок. Видалено: %s, дата: %s",
+                "О 00:00 (Europe/Kyiv) виконано автоочистку. Видалено заявок: %s, дата: %s",
                 cleared_count,
                 today_str,
             )
